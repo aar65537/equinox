@@ -12,8 +12,8 @@ from .._module import field, Module
 class Linear(Module, strict=True):
     """Performs a linear transformation."""
 
-    weight: Array
-    bias: Optional[Array]
+    weight: Array = field(core_dims="(m,n)")
+    bias: Optional[Array] = field(core_dims="(m)")
     in_features: Union[int, Literal["scalar"]] = field(static=True)
     out_features: Union[int, Literal["scalar"]] = field(static=True)
     use_bias: bool = field(static=True)

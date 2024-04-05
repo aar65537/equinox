@@ -3,6 +3,7 @@
 This includes both the core dataclass+pytree combo, plus various related pieces of
 functionality.
 """
+
 import abc
 import dataclasses
 import functools as ft
@@ -50,6 +51,7 @@ _converter_sentinel: Any = doc_repr(object(), "lambda x: x")
 def field(
     *,
     converter: Callable[[Any], Any] = _converter_sentinel,
+    core_dims: Optional[str] = None,
     static: bool = False,
     **kwargs,
 ):
@@ -100,7 +102,9 @@ def field(
     except KeyError:
         metadata = {}
     if "converter" in metadata:
-        raise ValueError("Cannot use metadata with `static` already set.")
+        raise ValueError("Cannot use metadata with `converter` already set.")
+    if "core_dims" in metadata:
+        raise ValueError("Cannot use metadata with `core_dims` already set.")
     if "static" in metadata:
         raise ValueError("Cannot use metadata with `static` already set.")
     # We don't just use `lambda x: x` as the default, so that this works:
@@ -120,6 +124,8 @@ def field(
     # introduction of `AbstractVar`), so we do want to support this.
     if converter is not _converter_sentinel:
         metadata["converter"] = converter
+    if core_dims:
+        metadata["core_dims"] = core_dims
     if static:
         metadata["static"] = True
     return dataclasses.field(metadata=metadata, **kwargs)
