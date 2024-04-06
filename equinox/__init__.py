@@ -57,6 +57,10 @@ from ._tree import (
     tree_flatten_one_level as tree_flatten_one_level,
 )
 from ._update import apply_updates as apply_updates
+from ._vectorize import (
+    dims_spec as dims_spec,
+    filter_vectorize as filter_vectorize,
+)
 from ._vmap_pmap import (
     filter_pmap as filter_pmap,
     filter_vmap as filter_vmap,
