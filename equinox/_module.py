@@ -22,6 +22,7 @@ from jaxtyping import Array, Bool, PyTreeDef
 
 from ._better_abstract import ABCMeta, dataclass
 from ._caches import internal_lru_caches
+from ._custom_types import DimsSpec
 from ._doc_utils import doc_repr
 from ._pretty_print import tree_pformat
 from ._tree import tree_equal
@@ -51,7 +52,7 @@ _converter_sentinel: Any = doc_repr(object(), "lambda x: x")
 def field(
     *,
     converter: Callable[[Any], Any] = _converter_sentinel,
-    dims: Optional[str] = None,
+    dims: DimsSpec = None,
     static: bool = False,
     **kwargs,
 ):

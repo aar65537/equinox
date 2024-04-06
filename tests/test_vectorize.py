@@ -13,7 +13,7 @@ from .helpers import tree_allclose
 
 
 @pytest.mark.parametrize("shape", [(), (2,), (3, 2)])
-def test_scalar_args(shape):
+def test_scalar_kernel(shape):
     @eqx.filter_vectorize()
     def f(a: Scalar, b: Scalar) -> Scalar:
         return a + b
@@ -41,19 +41,19 @@ def test_scalar_args(shape):
         f(a, b)
 
 
-@pytest.mark.parametrize("mode", ["mangle", "preserve"])
+@pytest.mark.parametrize("exclude", [True, False])
+@pytest.mark.parametrize("mangle", [True, False])
 @pytest.mark.parametrize("shape", [(), (2,), (3, 2)])
 @pytest.mark.parametrize("use_bias", [True, False])
-def test_module_args(mode, shape, use_bias):
-    if mode == "(p)" and shape == ():
-        return
-
+def test_module_args(
+    exclude: bool, mangle: bool, shape: tuple[int, ...], use_bias: bool
+):
     class M(eqx.Module):
         weights: Array = eqx.field(dims="(m,n)")
-        bias: Optional[Array] = eqx.field(dims="(m)")
+        bias: Optional[Array] = eqx.field(dims=eqx.dims_spec("(m)", exclude=exclude))
         use_bias: bool = eqx.field(static=True)
 
-    @eqx.filter_vectorize(in_dims=(mode, "(n)"), out_dims="(m)")
+    @eqx.filter_vectorize(in_dims=(eqx.dims_spec(mangle=mangle), "(n)"), out_dims="(m)")
     def f(m: M, x: Array) -> Array:
         x = m.weights @ x
         if m.use_bias:
@@ -68,7 +68,12 @@ def test_module_args(mode, shape, use_bias):
 
     # works on unbatched data
     # works when all passed as args
+    # doesn't work when excluding bias array
     x = jnp.ones(5)
+    if exclude and use_bias and shape != ():
+        with pytest.raises(ValueError):
+            f(m, x)
+        return
     out = f(m, x)
     assert tree_allclose(out, jnp.full((*shape, 8), 5.0) + float(use_bias))
 
@@ -89,17 +94,15 @@ def test_module_args(mode, shape, use_bias):
         f(m=m, x=x)
 
     x = jnp.ones(8)
-    if mode == "mangle":
+    if mangle:
         # when mangled incorrect dims cause TypeError at `m.weights @ x`
         with pytest.raises(TypeError):
             f(m, x)
-    elif mode == "preserve":
+    else:
         # when not mangled incorrect dims cause
         # ValueError in `jax.numpy.vectorize`
         with pytest.raises(ValueError):
             f(m, x)
-    else:
-        assert False
 
     # raises ValueError with unbroadcast-able data
     x = jnp.ones(())
