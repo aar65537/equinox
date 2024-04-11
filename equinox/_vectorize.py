@@ -2,7 +2,7 @@ import dataclasses
 import functools as ft
 import re
 from collections.abc import Callable
-from typing import Any, Optional, overload, ParamSpec, TypeVar, Union
+from typing import Any, Iterable, Optional, overload, ParamSpec, TypeVar, Union
 
 import jax.numpy as jnp
 import jax.tree_util as jtu
@@ -26,9 +26,16 @@ def _is_none(x: Any) -> bool:
     return x is None
 
 
-_tree_map = ft.partial(jtu.tree_map, is_leaf=_is_none)
-_tree_flatten = ft.partial(jtu.tree_flatten, is_leaf=_is_none)
 _filter = ft.partial(filter, is_leaf=_is_none)
+_tree_flatten = ft.partial(jtu.tree_flatten, is_leaf=_is_none)
+_tree_map = ft.partial(jtu.tree_map, is_leaf=_is_none)
+_tree_structure = ft.partial(jtu.tree_structure, is_leaf=_is_none)
+
+
+def _tree_restructure(pytree: PyTree, prototype: PyTree) -> PyTree:
+    pytree_leaves, _ = _tree_flatten(pytree)
+    treedef = _tree_structure(prototype)
+    return jtu.tree_unflatten(treedef, pytree_leaves)
 
 
 def _is_dataclass_or_none(x: Any) -> bool:
@@ -132,11 +139,9 @@ def _split_in(args, kwargs, in_):
 def _signature(
     in_dims_leaves: PyTree[Dims],
     filter_leaves: PyTree[bool],
-    out_dims: Union[Dims, tuple[Dims, ...]],
+    out_dims: tuple[Dims, ...],
 ) -> str:
     in_dims_leaves = _filter(in_dims_leaves, filter_leaves, True, _SCALAR)
-    if isinstance(out_dims, Dims):
-        out_dims = (out_dims,)
     _in_dims = ",".join(in_dims_leaves)
     _out_dims = ",".join("()" if dim is None else dim for dim in out_dims)
     signature = "->".join((_in_dims, _out_dims)) + ",()"
@@ -146,7 +151,8 @@ def _signature(
 class _VectorizeWrapper(Module):
     _fun: Callable
     _in_dims: PyTree[DimsSpec]
-    _out_dims: Union[Dims, tuple[Dims, ...]]
+    _out_dims: tuple[Dims, ...]
+    _wrap_out: bool
 
     @property
     def __wrapped__(self):
@@ -167,22 +173,19 @@ class _VectorizeWrapper(Module):
             _in_ = jtu.tree_unflatten(in_treedef, _in_leaves)
             _args, _kwargs = _split_in(args, kwargs, _in_)
             _out = self._fun(*_args, **_kwargs)
-            _out_dims = _resolve_dims(_out, self._out_dims)
-            _out_leaves, _out_treedef = _tree_flatten(_out)
-            _out_dims_leaves, _ = _tree_flatten(_out_dims)
-            _filter_leaves = _tree_map(_is_exclude, _out_leaves, _out_dims_leaves)
-            _exclude_out_leaves, _include_out_leaves = partition(
-                _out_leaves, _filter_leaves
-            )
-            _exclude_out = jtu.tree_unflatten(_out_treedef, _exclude_out_leaves)
-            _include_out = jtu.tree_unflatten(_out_treedef, _include_out_leaves)
-            return _include_out, Static(_exclude_out)
+            _out = (_out,) if self._wrap_out else _out
+            _out_dims = _resolve_dims(tuple(_out), self._out_dims)
+            _out_dims = _tree_restructure(_out_dims, _out)
+            _filter = _tree_map(_is_exclude, _out, _out_dims)
+            _exclude_out, _include_out = partition(_out, _filter)
+            return *_include_out, Static(_exclude_out)
 
         signature = _signature(in_dims_leaves, filter_leaves, self._out_dims)
-        include_out, exclude_out = jnp.vectorize(_fun_wrapper, signature=signature)(
-            *dynamic_in_leaves
-        )
-        return combine(include_out, exclude_out.value)
+        vectorized_fun = jnp.vectorize(_fun_wrapper, signature=signature)
+        *include_out, exclude_out = vectorized_fun(*dynamic_in_leaves)
+        include_out = _tree_restructure(include_out, exclude_out.value)
+        out = combine(include_out, exclude_out.value)
+        return out[0] if self._wrap_out else out
 
     def __get__(self, instance, owner):
         if instance is None:
@@ -194,7 +197,7 @@ class _VectorizeWrapper(Module):
 def filter_vectorize(
     *,
     in_dims: PyTree[DimsSpec] = _SCALAR,
-    out_dims: Union[Dims, tuple[Dims, ...]] = _SCALAR,
+    out_dims: Union[Dims, Iterable[Dims]] = _SCALAR,
 ) -> Callable[[Callable[_P, _T]], Callable[_P, _T]]:
     ...
 
@@ -204,13 +207,13 @@ def filter_vectorize(
     fun: Callable[_P, _T],
     *,
     in_dims: PyTree[DimsSpec] = _SCALAR,
-    out_dims: Union[Dims, tuple[Dims, ...]] = _SCALAR,
+    out_dims: Union[Dims, Iterable[Dims]] = _SCALAR,
 ) -> Callable[_P, _T]:
     ...
 
 
 def filter_vectorize(
-    fun=sentinel, in_dims=_SCALAR, out_dims: Union[Dims, tuple[Dims, ...]] = _SCALAR
+    fun=sentinel, in_dims=_SCALAR, out_dims: Union[Dims, Iterable[Dims]] = _SCALAR
 ):
     if fun is sentinel:
         return ft.partial(
@@ -219,10 +222,12 @@ def filter_vectorize(
             out_dims=out_dims,
         )
 
+    _wrap_out = isinstance(out_dims, Optional[str])
     vectorize_wrapper = _VectorizeWrapper(
         _fun=fun,
         _in_dims=in_dims,
-        _out_dims=out_dims,
+        _out_dims=(out_dims,) if _wrap_out else tuple(out_dims),
+        _wrap_out=_wrap_out,
     )
 
     return module_update_wrapper(vectorize_wrapper)

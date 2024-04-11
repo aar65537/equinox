@@ -179,7 +179,8 @@ def test_module_output(shape: tuple[int, ...], use_bias: bool):
 
 @pytest.mark.parametrize("shape", [(), (2,), (3, 2)])
 @pytest.mark.parametrize("use_bias", [True, False])
-def test_multiple_output(shape: tuple[int, ...], use_bias: bool):
+@pytest.mark.parametrize("container", [tuple, list])
+def test_multiple_output(shape: tuple[int, ...], use_bias: bool, container):
     class M(eqx.Module):
         weights: Array
         bias: Optional[Array]
@@ -189,11 +190,15 @@ def test_multiple_output(shape: tuple[int, ...], use_bias: bool):
     def f(key: PRNGKeyArray) -> tuple[M, PRNGKeyArray, Array]:
         weights = jrandom.normal(key, (8, 5))
         bias = jrandom.normal(key, (5,)) if use_bias else None
-        return M(weights=weights, bias=bias, use_bias=use_bias), key, jnp.asarray(0)
+        return container(
+            [M(weights=weights, bias=bias, use_bias=use_bias), key, jnp.asarray(0)]
+        )
 
     keys = jrandom.split(jrandom.PRNGKey(0), shape)
-    m, _keys, zero = f(keys)
+    out = f(keys)
+    m, _keys, zero = out
 
+    assert isinstance(out, container)
     assert m.weights.shape == (*shape, 8, 5)
     assert tree_allclose(_keys, keys)
     assert tree_allclose(zero, jnp.asarray(0))
