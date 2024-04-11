@@ -57,9 +57,10 @@ def test_array_fn(shape: tuple[int, ...]):
     out = f(a, b=b)
     assert tree_allclose(out, jnp.full((*shape, 8), 5.0))
 
-    # raises ValueError with all input passed as kwargs
-    with pytest.raises(ValueError):
-        f(a=a, b=b)
+    # works with all input passed as kwargs
+    a, b = jnp.ones((13, *shape, 8, 5)), jnp.ones((21, 13, *shape, 5))
+    out = f(a=a, b=b)
+    assert tree_allclose(out, jnp.full((21, 13, *shape, 8), 5.0))
 
     # raises ValueError with inconsistent core dims
     a, b = jnp.ones((*shape, 8, 5)), jnp.ones((*shape, 8))
@@ -99,7 +100,7 @@ def test_module_input(
     )
 
     # works with core dims
-    # works with all inputs passed as args
+    # works with all input passed as args
     x = jnp.ones(5)
     out = f(m, x)
     assert tree_allclose(out, jnp.full((*shape, 8), 5.0) + float(use_bias))
@@ -111,13 +112,10 @@ def test_module_input(
     assert tree_allclose(out, jnp.full((*shape, 8), 5.0) + float(use_bias))
 
     # works with broadcastable loop dims
+    # works with all input passed as kwargs
     x = jnp.ones((13, *shape, 5))
-    out = f(m, x)
+    out = f(m=m, x=x)
     assert tree_allclose(out, jnp.full((13, *shape, 8), 5.0) + float(use_bias))
-
-    # raises ValueError with all inputs passed as kwargs
-    with pytest.raises(ValueError):
-        f(m=m, x=x)
 
     x = jnp.ones(8)
     if mangle:
@@ -141,7 +139,7 @@ def test_module_input(
         use_bias=use_bias,
     )
 
-    # only works batched when excluding bias
+    # raises ValueError with excluded batched bias
     x = jnp.ones(5)
     if shape == () or not exclude or not use_bias:
         f(m, x)

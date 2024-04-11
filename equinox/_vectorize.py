@@ -1,5 +1,6 @@
 import dataclasses
 import functools as ft
+import inspect
 import re
 from collections.abc import Callable
 from typing import Any, Iterable, Optional, overload, ParamSpec, TypeVar, Union
@@ -148,22 +149,33 @@ def _convert_to_signature(dims_leaves: Iterable[str]) -> str:
     return ",".join(map(_convert_dims, dims_leaves))
 
 
-def _signature(
+def _gufunc_signature(
     in_dims_leaves: PyTree[Dims],
     filter_leaves: PyTree[bool],
     out_dims: tuple[Dims, ...],
 ) -> str:
     in_dims_leaves = _filter(in_dims_leaves, filter_leaves, True, _SCALAR)
-    out_dims_leaves = (_SCALAR if dim is None else dim for dim in out_dims)
+    out_dims_leaves = (_SCALAR if dim is None else dim for dim in out_dims + (None,))
     in_signature = _convert_to_signature(in_dims_leaves)
-    out_signature = _convert_to_signature(out_dims_leaves) + ",()"
+    out_signature = _convert_to_signature(out_dims_leaves)
     return in_signature + "->" + out_signature
+
+
+def _bind(
+    signature: inspect.Signature, args: tuple, kwargs: dict
+) -> tuple[tuple, dict]:
+    bound = signature.bind(*args, **kwargs)
+    bound.apply_defaults()
+    args = bound.args
+    kwargs = bound.kwargs
+    return (args, kwargs)
 
 
 class _VectorizeWrapper(Module):
     _fun: Callable
     _in_dims: PyTree[DimsSpec]
     _out_dims: tuple[Dims, ...]
+    _signature: inspect.Signature
     _wrap_out: bool
 
     @property
@@ -171,6 +183,7 @@ class _VectorizeWrapper(Module):
         return self._fun
 
     def __call__(self, /, *args, **kwargs):
+        args, kwargs = _bind(self._signature, args, kwargs)
         in_ = _combine_args_kwargs(args, kwargs)
         in_dims = _resolve_dims(in_, self._in_dims)
         in_leaves, in_treedef = _tree_flatten(in_)
@@ -179,6 +192,9 @@ class _VectorizeWrapper(Module):
         exclude_in_leaves, include_in_leaves = partition(in_leaves, filter_leaves)
         dynamic_in_leaves, static_in_leaves = partition(include_in_leaves, is_array)
         static_in_leaves = tuple(combine(exclude_in_leaves, static_in_leaves))
+        gufunc_signature = _gufunc_signature(
+            in_dims_leaves, filter_leaves, self._out_dims
+        )
 
         def _fun_wrapper(*_dynamic_in_leaves):
             _in_leaves = combine(_dynamic_in_leaves, static_in_leaves)
@@ -192,8 +208,7 @@ class _VectorizeWrapper(Module):
             _exclude_out, _include_out = partition(_out, _filter)
             return *_include_out, Static(_exclude_out)
 
-        signature = _signature(in_dims_leaves, filter_leaves, self._out_dims)
-        vectorized_fun = jnp.vectorize(_fun_wrapper, signature=signature)
+        vectorized_fun = jnp.vectorize(_fun_wrapper, signature=gufunc_signature)
         *include_out, exclude_out = vectorized_fun(*dynamic_in_leaves)
         include_out = _tree_restructure(include_out, exclude_out.value)
         out = combine(include_out, exclude_out.value)
@@ -234,12 +249,14 @@ def filter_vectorize(
             out_dims=out_dims,
         )
 
-    _wrap_out = isinstance(out_dims, Optional[str])
+    signature = inspect.signature(fun)
+    wrap_out = isinstance(out_dims, Optional[str])
     vectorize_wrapper = _VectorizeWrapper(
         _fun=fun,
         _in_dims=in_dims,
-        _out_dims=(out_dims,) if _wrap_out else tuple(out_dims),
-        _wrap_out=_wrap_out,
+        _out_dims=(out_dims,) if wrap_out else tuple(out_dims),
+        _signature=signature,
+        _wrap_out=wrap_out,
     )
 
     return module_update_wrapper(vectorize_wrapper)
