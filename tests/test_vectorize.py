@@ -41,7 +41,7 @@ def test_scalar_fn(shape: tuple[int, ...]):
 
 @pytest.mark.parametrize("shape", [(), (2,), (3, 2)])
 def test_array_fn(shape: tuple[int, ...]):
-    @eqx.filter_vectorize(in_dims=("(m,n)", "(n)"), out_dims="(m)")
+    @eqx.filter_vectorize(in_dims=("m n", "n"), out_dims="m")
     def f(a: Array, b: Array) -> Array:
         return a @ b
 
@@ -80,11 +80,11 @@ def test_module_input(
     exclude: bool, mangle: bool, shape: tuple[int, ...], use_bias: bool
 ):
     class M(eqx.Module):
-        weights: Array = eqx.field(dims="(m,n)")
-        bias: Optional[Array] = eqx.field(dims=eqx.dims_spec("(m)", exclude=exclude))
+        weights: Array = eqx.field(dims="m n")
+        bias: Optional[Array] = eqx.field(dims=eqx.dims_spec("m", exclude=exclude))
         use_bias: bool = eqx.field(static=True)
 
-    @eqx.filter_vectorize(in_dims=(eqx.dims_spec(mangle=mangle), "(n)"), out_dims="(m)")
+    @eqx.filter_vectorize(in_dims=(eqx.dims_spec(mangle=mangle), "n"), out_dims="m")
     def f(m: M, x: Array) -> Array:
         x = m.weights @ x
         if m.use_bias:
@@ -158,7 +158,7 @@ def test_module_output(shape: tuple[int, ...], use_bias: bool):
         bias: Optional[Array]
         use_bias: bool = eqx.field(static=True)
 
-    @eqx.filter_vectorize(in_dims=("(2)"))
+    @eqx.filter_vectorize(in_dims=("2"))
     def f(key: PRNGKeyArray) -> M:
         weights = jrandom.normal(key, (8, 5))
         bias = jrandom.normal(key, (5,)) if use_bias else None
@@ -186,7 +186,7 @@ def test_multiple_output(shape: tuple[int, ...], use_bias: bool, container):
         bias: Optional[Array]
         use_bias: bool = eqx.field(static=True)
 
-    @eqx.filter_vectorize(in_dims=("(2)"), out_dims=("()", "(2)", None))
+    @eqx.filter_vectorize(in_dims=("2"), out_dims=("", "2", None))
     def f(key: PRNGKeyArray) -> tuple[M, PRNGKeyArray, Array]:
         weights = jrandom.normal(key, (8, 5))
         bias = jrandom.normal(key, (5,)) if use_bias else None
@@ -217,13 +217,13 @@ def test_multiple_output(shape: tuple[int, ...], use_bias: bool, container):
 def test_methods(call: bool, outer: bool, shape: tuple[int, ...]):
     vectorize = ft.partial(
         eqx.filter_vectorize,
-        in_dims=(eqx.dims_spec(mangle=False), "(n)"),
-        out_dims="(m)",
+        in_dims=(eqx.dims_spec(mangle=False), "n"),
+        out_dims="m",
     )
 
     class M(eqx.Module):
-        weights: Array = eqx.field(dims="(m,n)")
-        bias: Optional[Array] = eqx.field(dims="(m)")
+        weights: Array = eqx.field(dims="m n")
+        bias: Optional[Array] = eqx.field(dims="m")
 
         if call:
 
@@ -268,16 +268,16 @@ def test_linear_ensemble(
     out_features: Union[int, Literal["scalar"]],
     use_bias: bool,
 ):
-    @eqx.filter_vectorize(in_dims="(2)")
+    @eqx.filter_vectorize(in_dims="2")
     def make(key: PRNGKeyArray) -> eqx.nn.Linear:
         return eqx.nn.Linear(in_features, out_features, use_bias, key=key)
 
     @eqx.filter_vectorize(
         in_dims=(
             eqx.dims_spec(mangle=False),
-            "()" if in_features == "scalar" else "(n)",
+            "" if in_features == "scalar" else "n",
         ),
-        out_dims="()" if out_features == "scalar" else "(m)",
+        out_dims="" if out_features == "scalar" else "m",
     )
     def evaluate(model, x) -> Array:
         return model(x)
@@ -319,13 +319,13 @@ def test_mlp_ensemble(
     in_size: Union[int, Literal["scalar"]],
     out_size: Union[int, Literal["scalar"]],
 ):
-    @eqx.filter_vectorize(in_dims="(2)")
+    @eqx.filter_vectorize(in_dims="2")
     def make(key: PRNGKeyArray) -> eqx.nn.MLP:
         return eqx.nn.MLP(in_size, out_size, 13, 4, key=key)
 
     @eqx.filter_vectorize(
-        in_dims=("()", "()" if in_size == "scalar" else "(n)"),
-        out_dims="()" if out_size == "scalar" else "(m)",
+        in_dims=("", "" if in_size == "scalar" else "n"),
+        out_dims="" if out_size == "scalar" else "m",
     )
     def evaluate(model, x) -> Array:
         return model(x)

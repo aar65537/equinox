@@ -17,9 +17,8 @@ _P = ParamSpec("_P")
 _T = TypeVar("_T")
 
 _DIMENSION_NAME = r"\w+"
-_DIMENSION_LIST = "(?:{0:}(?:,{0:})*)?".format(_DIMENSION_NAME)
-_ARGUMENT = rf"\({_DIMENSION_LIST}\)"
-_SCALAR = "()"
+_DIMENSION_LIST = "^(?:{0:}(?:\\s+{0:})*)?$".format(_DIMENSION_NAME)
+_SCALAR = ""
 
 
 def _is_none(x: Any) -> bool:
@@ -47,8 +46,8 @@ def _is_exclude(x: Any, dims: Optional[Dims]) -> bool:
 
 
 def _parse_dims(dims: str) -> tuple[str, ...]:
-    if not re.match(_ARGUMENT, dims):
-        raise ValueError(f"{dims} is not a valid gufunc dimension signature.")
+    if not re.match(_DIMENSION_LIST, dims):
+        raise ValueError(f"'{dims}' is not a valid dimension signature.")
     return tuple(re.findall(_DIMENSION_NAME, dims))
 
 
@@ -59,7 +58,7 @@ class _mangle_dims:
     def __call__(self, dims: Dims) -> Dims:
         if dims is None:
             return None
-        return "(" + ",".join(self.id + "_" + dim for dim in _parse_dims(dims)) + ")"
+        return " ".join(self.id + "_" + dim for dim in _parse_dims(dims))
 
 
 @dataclasses.dataclass(frozen=True)
@@ -69,7 +68,7 @@ class _batch_dims:
     def __call__(self, dims: Dims) -> Dims:
         if self.batch is None or dims is None:
             return None
-        return "(" + ",".join((*_parse_dims(self.batch), *_parse_dims(dims))) + ")"
+        return " ".join((*_parse_dims(self.batch), *_parse_dims(dims)))
 
 
 @dataclasses.dataclass(frozen=True)
@@ -96,14 +95,15 @@ class dims_spec:
                 resolved_dims = _resolve_dims(value, dims_spec)
                 dims.append(resolved_dims)
             if self.mangle:
-                dims = _tree_map(_mangle_dims(str(id(x))), dims)
+                id_str = str(id(x))
+                dims = _tree_map(_mangle_dims(id_str), dims)
             return _tree_map(_batch_dims(self.dims), dims)
 
 
 def _resolve_dims_spec(_dims_spec: DimsSpec, elem: Any) -> PyTree[Dims]:
     if _dims_spec is None:
         _dims_spec = dims_spec(exclude=True)
-    if isinstance(_dims_spec, Dims):
+    elif isinstance(_dims_spec, Dims):
         _dims_spec = dims_spec(dims=_dims_spec)
     if not callable(_dims_spec):
         raise ValueError("`in_dims` must be a PyTree of strings and callables only.")
@@ -114,7 +114,9 @@ def _resolve_dims(pytree: PyTree[Any], dims_spec: PyTree[DimsSpec]) -> PyTree[Di
     return _tree_map(_resolve_dims_spec, dims_spec, pytree)
 
 
-def _combine_args_kwargs(args, kwargs):
+def _combine_args_kwargs(
+    args: Optional[tuple], kwargs: Optional[dict]
+) -> Union[dict, tuple]:
     if args and kwargs:
         return (*args, kwargs)
     if args:
@@ -124,7 +126,9 @@ def _combine_args_kwargs(args, kwargs):
     raise ValueError("Vectorized function must be called with input.")
 
 
-def _split_in(args, kwargs, in_):
+def _split_in(
+    args: Optional[tuple], kwargs: Optional[dict], in_: Union[dict, tuple]
+) -> tuple[tuple, dict]:
     if args and kwargs:
         *_args, _kwargs = in_
     elif args:
@@ -133,7 +137,15 @@ def _split_in(args, kwargs, in_):
         _args, _kwargs = (), in_
     else:
         raise ValueError("Vectorized function must be called with input.")
-    return _args, _kwargs
+    return tuple(_args), dict(_kwargs)
+
+
+def _convert_dims(dims: str) -> str:
+    return "(" + ",".join(dim for dim in _parse_dims(dims)) + ")"
+
+
+def _convert_to_signature(dims_leaves: Iterable[str]) -> str:
+    return ",".join(map(_convert_dims, dims_leaves))
 
 
 def _signature(
@@ -142,10 +154,10 @@ def _signature(
     out_dims: tuple[Dims, ...],
 ) -> str:
     in_dims_leaves = _filter(in_dims_leaves, filter_leaves, True, _SCALAR)
-    _in_dims = ",".join(in_dims_leaves)
-    _out_dims = ",".join("()" if dim is None else dim for dim in out_dims)
-    signature = "->".join((_in_dims, _out_dims)) + ",()"
-    return signature
+    out_dims_leaves = (_SCALAR if dim is None else dim for dim in out_dims)
+    in_signature = _convert_to_signature(in_dims_leaves)
+    out_signature = _convert_to_signature(out_dims_leaves) + ",()"
+    return in_signature + "->" + out_signature
 
 
 class _VectorizeWrapper(Module):
