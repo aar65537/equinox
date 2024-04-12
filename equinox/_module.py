@@ -52,7 +52,7 @@ _converter_sentinel: Any = doc_repr(object(), "lambda x: x")
 def field(
     *,
     converter: Callable[[Any], Any] = _converter_sentinel,
-    dims: DimsSpec = None,
+    dims: DimsSpec = "",
     static: bool = False,
     **kwargs,
 ):
@@ -125,7 +125,11 @@ def field(
     # introduction of `AbstractVar`), so we do want to support this.
     if converter is not _converter_sentinel:
         metadata["converter"] = converter
-    if dims:
+    if dims == "":
+        pass
+    elif dims is None:
+        metadata["dims"] = lambda _: None
+    else:
         metadata["dims"] = dims
     if static:
         metadata["static"] = True

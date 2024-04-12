@@ -12,6 +12,7 @@ from jaxtyping import Array, PyTree
 from ._custom_types import Dims, DimsSpec, sentinel
 from ._filters import combine, filter, is_array, partition
 from ._module import Module, module_update_wrapper, Partial, Static
+from ._tree import tree_flatten_one_level
 
 
 _P = ParamSpec("_P")
@@ -26,29 +27,71 @@ def _is_none(x: Any) -> bool:
     return x is None
 
 
+def _is_dataclass_or_none(x: Any) -> bool:
+    return dataclasses.is_dataclass(x) or _is_none(x)
+
+
+def _is_vectorized(x: Any, dims: Dims) -> bool:
+    return is_array(x) and not _is_none(dims)
+
+
 _filter = ft.partial(filter, is_leaf=_is_none)
+_partition = ft.partial(partition, is_leaf=_is_none)
 _tree_flatten = ft.partial(jtu.tree_flatten, is_leaf=_is_none)
 _tree_map = ft.partial(jtu.tree_map, is_leaf=_is_none)
 _tree_structure = ft.partial(jtu.tree_structure, is_leaf=_is_none)
 
 
-def _tree_restructure(pytree: PyTree, prototype: PyTree) -> PyTree:
+def _tree_restructure(pytree: PyTree[Any], prototype: PyTree[Any]) -> PyTree[Any]:
     pytree_leaves, _ = _tree_flatten(pytree)
     treedef = _tree_structure(prototype)
     return jtu.tree_unflatten(treedef, pytree_leaves)
 
 
-def _is_dataclass_or_none(x: Any) -> bool:
-    return dataclasses.is_dataclass(x) or x is None
+def _bind(
+    signature: inspect.Signature, args: tuple, kwargs: dict
+) -> tuple[tuple, dict]:
+    bound = signature.bind(*args, **kwargs)
+    bound.apply_defaults()
+    args = bound.args
+    kwargs = bound.kwargs
+    return (args, kwargs)
 
 
-def _is_exclude(x: Any, dims: Optional[Dims]) -> bool:
-    return not is_array(x) or dims is None
+def _combine_input(args: Optional[tuple], kwargs: Optional[dict]) -> Union[dict, tuple]:
+    if args and kwargs:
+        return (*args, kwargs)
+    if args:
+        return args
+    if kwargs:
+        return kwargs
+    raise ValueError("Vectorized function must be called with input.")
 
 
-def _parse_dims(dims: str) -> tuple[str, ...]:
-    if not re.match(_DIMENSION_LIST, dims):
-        raise ValueError(f"'{dims}' is not a valid dimension signature.")
+def _split_input(
+    in_: Union[dict, tuple], args: Optional[tuple], kwargs: Optional[dict]
+) -> tuple[tuple, dict]:
+    if args and kwargs:
+        *_args, _kwargs = in_
+    elif args:
+        _args, _kwargs = in_, {}
+    elif kwargs:
+        _args, _kwargs = (), in_
+    else:
+        raise ValueError("Vectorized function must be called with input.")
+    return tuple(_args), dict(_kwargs)
+
+
+def _validate_dims(dims: Dims) -> None:
+    if dims is None or re.match(_DIMENSION_LIST, dims):
+        return
+    raise ValueError(f"'{dims}' is not a valid dimension list.")
+
+
+def _parse_dims(dims: Dims) -> tuple[str, ...]:
+    if dims is None:
+        dims = _SCALAR
+    _validate_dims(dims)
     return tuple(re.findall(_DIMENSION_NAME, dims))
 
 
@@ -64,111 +107,66 @@ class _mangle_dims:
 
 @dataclasses.dataclass(frozen=True)
 class _batch_dims:
-    batch: Dims
+    dims: Dims
 
     def __call__(self, dims: Dims) -> Dims:
-        if self.batch is None or dims is None:
+        if self.dims is None or dims is None:
             return None
-        return " ".join((*_parse_dims(self.batch), *_parse_dims(dims)))
+        return " ".join((*_parse_dims(self.dims), *_parse_dims(dims)))
 
 
 @dataclasses.dataclass(frozen=True)
 class dims_spec:
     dims: Dims = _SCALAR
-    exclude: bool = False
     mangle: bool = True
 
     def __call__(self, x: Any) -> PyTree[Dims]:
-        if self.exclude:
+        if self.dims is None:
             return
         if isinstance(x, Array):
             return self.dims
-        if dataclasses.is_dataclass(x):
-            dims = []
-            for field in dataclasses.fields(x):
-                if field.metadata.get("static", False):
-                    continue
-                try:
-                    value = x.__dict__[field.name]
-                except KeyError:
-                    continue
-                dims_spec = field.metadata.get("dims", self.__class__())
-                resolved_dims = _resolve_dims(value, dims_spec)
-                dims.append(resolved_dims)
-            if self.mangle:
-                id_str = str(id(x))
-                dims = _tree_map(_mangle_dims(id_str), dims)
-            return _tree_map(_batch_dims(self.dims), dims)
+        if not dataclasses.is_dataclass(x):
+            return
+        dims = []
+        for field in dataclasses.fields(x):
+            if field.metadata.get("static", False):
+                continue
+            try:
+                value = x.__dict__[field.name]
+            except KeyError:
+                continue
+            dims_spec_ = field.metadata.get("dims", _SCALAR)
+            dims.append(_resolve_dims(dims_spec_, value))
+        if self.mangle:
+            id_str = str(id(x))
+            dims = _tree_map(_mangle_dims(id_str), dims)
+        return _tree_map(_batch_dims(self.dims), dims)
 
 
-def _resolve_dims_spec(_dims_spec: DimsSpec, elem: Any) -> PyTree[Dims]:
-    if _dims_spec is None:
-        _dims_spec = dims_spec(exclude=True)
-    elif isinstance(_dims_spec, Dims):
-        _dims_spec = dims_spec(dims=_dims_spec)
-    if not callable(_dims_spec):
+def _resolve_dims_spec(dims_spec_: DimsSpec, pytree: PyTree[Any]) -> PyTree[Dims]:
+    if isinstance(dims_spec_, Dims):
+        _validate_dims(dims_spec_)
+        dims_spec_ = dims_spec(dims_spec_)
+    if not callable(dims_spec_):
         raise ValueError("`in_dims` must be a PyTree of strings and callables only.")
-    return jtu.tree_map(_dims_spec, elem, is_leaf=_is_dataclass_or_none)
+    return jtu.tree_map(dims_spec_, pytree, is_leaf=_is_dataclass_or_none)
 
 
-def _resolve_dims(pytree: PyTree[Any], dims_spec: PyTree[DimsSpec]) -> PyTree[Dims]:
-    return _tree_map(_resolve_dims_spec, dims_spec, pytree)
+def _resolve_dims(dims_spec_: PyTree[DimsSpec], pytree: PyTree[Any]) -> PyTree[Dims]:
+    resolved_dims = _tree_map(_resolve_dims_spec, dims_spec_, pytree)
+    return _tree_restructure(resolved_dims, pytree)
 
 
-def _combine_args_kwargs(
-    args: Optional[tuple], kwargs: Optional[dict]
-) -> Union[dict, tuple]:
-    if args and kwargs:
-        return (*args, kwargs)
-    if args:
-        return args
-    if kwargs:
-        return kwargs
-    raise ValueError("Vectorized function must be called with input.")
+def _gufunc_dims(dims: Dims) -> str:
+    return "(" + ",".join(_parse_dims(dims)) + ")"
 
 
-def _split_in(
-    args: Optional[tuple], kwargs: Optional[dict], in_: Union[dict, tuple]
-) -> tuple[tuple, dict]:
-    if args and kwargs:
-        *_args, _kwargs = in_
-    elif args:
-        _args, _kwargs = in_, {}
-    elif kwargs:
-        _args, _kwargs = (), in_
-    else:
-        raise ValueError("Vectorized function must be called with input.")
-    return tuple(_args), dict(_kwargs)
+def _gufunc_dims_list(dims_list: Iterable[Dims]) -> str:
+    return ",".join(map(_gufunc_dims, dims_list))
 
 
-def _convert_dims(dims: str) -> str:
-    return "(" + ",".join(dim for dim in _parse_dims(dims)) + ")"
-
-
-def _convert_to_signature(dims_leaves: Iterable[str]) -> str:
-    return ",".join(map(_convert_dims, dims_leaves))
-
-
-def _gufunc_signature(
-    in_dims_leaves: PyTree[Dims],
-    filter_leaves: PyTree[bool],
-    out_dims: tuple[Dims, ...],
-) -> str:
-    in_dims_leaves = _filter(in_dims_leaves, filter_leaves, True, _SCALAR)
-    out_dims_leaves = (_SCALAR if dim is None else dim for dim in out_dims + (None,))
-    in_signature = _convert_to_signature(in_dims_leaves)
-    out_signature = _convert_to_signature(out_dims_leaves)
-    return in_signature + "->" + out_signature
-
-
-def _bind(
-    signature: inspect.Signature, args: tuple, kwargs: dict
-) -> tuple[tuple, dict]:
-    bound = signature.bind(*args, **kwargs)
-    bound.apply_defaults()
-    args = bound.args
-    kwargs = bound.kwargs
-    return (args, kwargs)
+def _gufunc_signature(in_dims: Iterable[Dims], out_dims: Iterable[Dims]) -> str:
+    return "->".join(map(_gufunc_dims_list, (in_dims, out_dims)))
 
 
 class _VectorizeWrapper(Module):
@@ -183,36 +181,52 @@ class _VectorizeWrapper(Module):
         return self._fun
 
     def __call__(self, /, *args, **kwargs):
+        # Combine args and kwargs into a single PyTree
         args, kwargs = _bind(self._signature, args, kwargs)
-        in_ = _combine_args_kwargs(args, kwargs)
-        in_dims = _resolve_dims(in_, self._in_dims)
-        in_leaves, in_treedef = _tree_flatten(in_)
-        in_dims_leaves, _ = _tree_flatten(in_dims)
-        filter_leaves = _tree_map(_is_exclude, in_leaves, in_dims_leaves)
-        exclude_in_leaves, include_in_leaves = partition(in_leaves, filter_leaves)
-        dynamic_in_leaves, static_in_leaves = partition(include_in_leaves, is_array)
-        static_in_leaves = tuple(combine(exclude_in_leaves, static_in_leaves))
-        gufunc_signature = _gufunc_signature(
-            in_dims_leaves, filter_leaves, self._out_dims
-        )
+        in_ = _combine_input(args, kwargs)
+        # Determine core dimensions of inputs
+        in_dims = _resolve_dims(self._in_dims, in_)
+        vectorize_filter = _tree_map(_is_vectorized, in_, in_dims)
+        # Split input into list of Arrays to be vectorized and excluded PyTree
+        vectorize_in, exclude_in_1 = _partition(in_, vectorize_filter)
+        vectorize_in, exclude_in_2 = _partition(vectorize_in, is_array)
+        exclude_in = combine(exclude_in_1, exclude_in_2)
+        vectorize_in_leaves, in_treedef = _tree_flatten(vectorize_in)
 
-        def _fun_wrapper(*_dynamic_in_leaves):
-            _in_leaves = combine(_dynamic_in_leaves, static_in_leaves)
-            _in_ = jtu.tree_unflatten(in_treedef, _in_leaves)
-            _args, _kwargs = _split_in(args, kwargs, _in_)
+        # Function to be wrapped with `jax.numpy.vectorize`
+        def _fun_wrapper(*_vectorize_in_leaves):
+            # Reconstitute args and kwargs
+            _vectorize_in = jtu.tree_unflatten(in_treedef, _vectorize_in_leaves)
+            _in_ = combine(_vectorize_in, exclude_in)
+            _args, _kwargs = _split_input(_in_, args, kwargs)
+            # Call fun with original args and kwargs
             _out = self._fun(*_args, **_kwargs)
-            _out = (_out,) if self._wrap_out else _out
-            _out_dims = _resolve_dims(tuple(_out), self._out_dims)
-            _out_dims = _tree_restructure(_out_dims, _out)
-            _filter = _tree_map(_is_exclude, _out, _out_dims)
-            _exclude_out, _include_out = partition(_out, _filter)
-            return *_include_out, Static(_exclude_out)
+            # Wrap output if out_dims was not an Iterable
+            if self._wrap_out:
+                _out = (_out,)
+            # Determine core dimensions of outputs
+            _, _out_treedef = tree_flatten_one_level(_out)
+            _out_dims_spec = jtu.tree_unflatten(_out_treedef, self._out_dims)
+            _out_dims = _resolve_dims(_out_dims_spec, _out)
+            # Split output into list of Arrays to be vectorized and excluded PyTree
+            _vectorize_filter = _tree_map(_is_vectorized, _out, _out_dims)
+            _vectorize_out, _exclude_out = _partition(_out, _vectorize_filter)
+            return *_vectorize_out, Static(_exclude_out)
 
-        vectorized_fun = jnp.vectorize(_fun_wrapper, signature=gufunc_signature)
-        *include_out, exclude_out = vectorized_fun(*dynamic_in_leaves)
-        include_out = _tree_restructure(include_out, exclude_out.value)
-        out = combine(include_out, exclude_out.value)
-        return out[0] if self._wrap_out else out
+        # Construct gufunc signature
+        vectoirze_in_dims = _filter(in_dims, vectorize_filter)
+        in_dims_leaves, _ = _tree_flatten(vectoirze_in_dims)
+        out_dims_leaves = self._out_dims + (None,)
+        gufunc_signature = _gufunc_signature(in_dims_leaves, out_dims_leaves)
+        # Call wrapped function
+        vectorize_fun = jnp.vectorize(_fun_wrapper, signature=gufunc_signature)
+        *vectorize_out, exclude_out = vectorize_fun(*vectorize_in_leaves)
+        vectorize_out = _tree_restructure(vectorize_out, exclude_out.value)
+        out = combine(vectorize_out, exclude_out.value)
+        # Unwrap output if out_dims was not an Iterable
+        if self._wrap_out:
+            return out[0]
+        return out
 
     def __get__(self, instance, owner):
         if instance is None:
@@ -248,9 +262,12 @@ def filter_vectorize(
             in_dims=in_dims,
             out_dims=out_dims,
         )
-
     signature = inspect.signature(fun)
-    wrap_out = isinstance(out_dims, Optional[str])
+    wrap_out = isinstance(out_dims, Dims)
+    if not (wrap_out or isinstance(out_dims, Iterable)):
+        raise ValueError(
+            "`out_dims` must be a string, None, or a tuple of strings and Nones."
+        )
     vectorize_wrapper = _VectorizeWrapper(
         _fun=fun,
         _in_dims=in_dims,
@@ -258,5 +275,4 @@ def filter_vectorize(
         _signature=signature,
         _wrap_out=wrap_out,
     )
-
     return module_update_wrapper(vectorize_wrapper)

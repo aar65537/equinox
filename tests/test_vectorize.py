@@ -82,7 +82,7 @@ def test_module_input(
 ):
     class M(eqx.Module):
         weights: Array = eqx.field(dims="m n")
-        bias: Optional[Array] = eqx.field(dims=eqx.dims_spec("m", exclude=exclude))
+        bias: Optional[Array] = eqx.field(dims=None if exclude else "m")
         use_bias: bool = eqx.field(static=True)
 
     @eqx.filter_vectorize(in_dims=(eqx.dims_spec(mangle=mangle), "n"), out_dims="m")
