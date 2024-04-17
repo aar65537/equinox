@@ -182,14 +182,13 @@ class Conv(Module, strict=True):
         return x
 
     @property
-    def weight(self) -> Array:
+    def weight(self):
         return self._weight.value
 
     @property
-    def bias(self) -> Optional[Array]:
-        if self._bias is None:
-            return
-        return self._bias.value
+    def bias(self):
+        if self._bias is not None:
+            return self._bias.value
 
 
 class Conv1d(Conv):
@@ -286,8 +285,8 @@ class ConvTranspose(Module, strict=True):
     """General N-dimensional transposed convolution."""
 
     num_spatial_dims: int = field(static=True)
-    weight: Array
-    bias: Optional[Array]
+    _weight: DimensionalValue[Array]
+    _bias: Optional[DimensionalValue[Array]]
     in_channels: int = field(static=True)
     out_channels: int = field(static=True)
     kernel_size: tuple[int, ...] = field(static=True)
@@ -384,21 +383,17 @@ class ConvTranspose(Module, strict=True):
 
         grouped_in_channels = in_channels // groups
         lim = 1 / np.sqrt(grouped_in_channels * math.prod(kernel_size))
-        self.weight = jrandom.uniform(
-            wkey,
-            (out_channels, grouped_in_channels) + kernel_size,
-            minval=-lim,
-            maxval=lim,
-        )
+        weight_shape = (out_channels, grouped_in_channels) + kernel_size
+        weight = jrandom.uniform(wkey, weight_shape, minval=-lim, maxval=lim)
+        weight_dims = " ".join(str(dim) for dim in weight_shape)
+        self._weight = DimensionalValue(weight, weight_dims)
         if use_bias:
-            self.bias = jrandom.uniform(
-                bkey,
-                (out_channels,) + (1,) * num_spatial_dims,
-                minval=-lim,
-                maxval=lim,
-            )
+            bias_shape = (out_channels,) + (1,) * num_spatial_dims
+            bias = jrandom.uniform(bkey, bias_shape, minval=-lim, maxval=lim)
+            bias_dims = " ".join(str(dim) for dim in bias_shape)
+            self._bias = DimensionalValue(bias, bias_dims)
         else:
-            self.bias = None
+            self._bias = None
 
         self.num_spatial_dims = num_spatial_dims
         self.in_channels = in_channels
@@ -462,6 +457,15 @@ class ConvTranspose(Module, strict=True):
         if self.use_bias:
             x = x + self.bias
         return x
+
+    @property
+    def weight(self):
+        return self._weight.value
+
+    @property
+    def bias(self):
+        if self._bias is not None:
+            return self._bias.value
 
 
 class ConvTranspose1d(ConvTranspose):
