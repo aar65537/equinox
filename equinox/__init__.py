@@ -58,6 +58,7 @@ from ._tree import (
 )
 from ._update import apply_updates as apply_updates
 from ._vectorize import (
+    DimensionalValue as DimensionalValue,
     dims_spec as dims_spec,
     filter_vectorize as filter_vectorize,
 )

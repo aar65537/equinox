@@ -3,7 +3,7 @@ import functools as ft
 import inspect
 import re
 from collections.abc import Callable
-from typing import Any, Iterable, Optional, overload, ParamSpec, TypeVar, Union
+from typing import Any, Generic, Iterable, Optional, overload, ParamSpec, TypeVar, Union
 
 import jax.numpy as jnp
 import jax.tree_util as jtu
@@ -11,7 +11,7 @@ from jaxtyping import Array, PyTree
 
 from ._custom_types import Dims, DimsSpec, sentinel
 from ._filters import combine, filter, is_array, partition
-from ._module import Module, module_update_wrapper, Partial, Static
+from ._module import field, Module, module_update_wrapper, Partial, Static
 from ._tree import tree_flatten_one_level
 
 
@@ -115,6 +115,11 @@ class _batch_dims:
         return " ".join((*_parse_dims(self.dims), *_parse_dims(dims)))
 
 
+class DimensionalValue(Module, Generic[_T]):
+    value: _T
+    dims: DimsSpec = field(static=True)
+
+
 @dataclasses.dataclass(frozen=True)
 class dims_spec:
     dims: Dims = _SCALAR
@@ -125,17 +130,19 @@ class dims_spec:
             return
         if isinstance(x, Array):
             return self.dims
+        if isinstance(x, DimensionalValue):
+            return _resolve_dims(x.dims, x.value)
         if not dataclasses.is_dataclass(x):
             return
         dims = []
-        for field in dataclasses.fields(x):
-            if field.metadata.get("static", False):
+        for field_ in dataclasses.fields(x):
+            if field_.metadata.get("static", False):
                 continue
             try:
-                value = x.__dict__[field.name]
+                value = x.__dict__[field_.name]
             except KeyError:
                 continue
-            dims_spec_ = field.metadata.get("dims", _SCALAR)
+            dims_spec_ = field_.metadata.get("dims", _SCALAR)
             dims.append(_resolve_dims(dims_spec_, value))
         if self.mangle:
             id_str = str(id(x))
@@ -266,7 +273,7 @@ def filter_vectorize(
     wrap_out = isinstance(out_dims, Dims)
     if not (wrap_out or isinstance(out_dims, Iterable)):
         raise ValueError(
-            "`out_dims` must be a string, None, or a tuple of strings and Nones."
+            "`out_dims` must be a string, None, or an Iterable of strings and Nones."
         )
     vectorize_wrapper = _VectorizeWrapper(
         _fun=fun,
