@@ -155,7 +155,7 @@ def _resolve_dims_spec(dims_spec_: DimsSpec, pytree: PyTree[Any]) -> PyTree[Dims
         _validate_dims(dims_spec_)
         dims_spec_ = dims_spec(dims_spec_)
     if not callable(dims_spec_):
-        raise ValueError("`in_dims` must be a PyTree of strings and callables only.")
+        raise ValueError("Dimension spec must be a str, None, or Callable[[Any], str].")
     return jtu.tree_map(dims_spec_, pytree, is_leaf=_is_dataclass_or_none)
 
 
@@ -195,9 +195,7 @@ class _VectorizeWrapper(Module):
         in_dims = _resolve_dims(self._in_dims, in_)
         vectorize_filter = _tree_map(_is_vectorized, in_, in_dims)
         # Split input into list of Arrays to be vectorized and excluded PyTree
-        vectorize_in, exclude_in_1 = _partition(in_, vectorize_filter)
-        vectorize_in, exclude_in_2 = _partition(vectorize_in, is_array)
-        exclude_in = combine(exclude_in_1, exclude_in_2)
+        vectorize_in, exclude_in = _partition(in_, vectorize_filter)
         vectorize_in_leaves, in_treedef = _tree_flatten(vectorize_in)
 
         # Function to be wrapped with `jax.numpy.vectorize`
@@ -273,7 +271,7 @@ def filter_vectorize(
     wrap_out = isinstance(out_dims, Dims)
     if not (wrap_out or isinstance(out_dims, Iterable)):
         raise ValueError(
-            "`out_dims` must be a string, None, or an Iterable of strings and Nones."
+            "`out_dims` must be a str, None, or an Iterable of str and None."
         )
     vectorize_wrapper = _VectorizeWrapper(
         _fun=fun,
