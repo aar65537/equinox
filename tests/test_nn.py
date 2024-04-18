@@ -9,6 +9,21 @@ import jax.random as jrandom
 import pytest
 
 
+def _test_ensemble(make_model, in_shape, out_dims, out_shape, getkey):
+    make_ensemble = eqx.filter_vectorize(make_model, in_dims="2")
+    in_dims = ("", " ".join(str(dim) for dim in in_shape), "2")
+    shapes = [(), (10,), (20, 10), (30, 20, 10)]
+    vectorize = eqx.filter_vectorize(in_dims=in_dims, out_dims=out_dims)
+    for ensemble_shape in shapes:
+        keys = jrandom.split(getkey(), ensemble_shape)
+        ensemble = make_ensemble(key=keys)
+        apply = vectorize(type(ensemble).__call__)
+        for batch_shape in shapes:
+            data = jnp.ones((*batch_shape, *in_shape))
+            out = apply(ensemble, data, key=getkey())
+            assert out.shape == out_shape(ensemble_shape, batch_shape)
+
+
 def test_custom_init():
     with pytest.raises(TypeError):
         eqx.nn.Linear(3, 4)  # pyright: ignore
@@ -44,6 +59,22 @@ def test_linear(getkey):
     x = jrandom.normal(getkey(), (2,))
     assert linear(x).shape == ()
 
+    _test_ensemble(
+        make_model=eqx.Partial(eqx.nn.Linear, 3, 4),
+        in_shape=(3,),
+        out_dims="out",
+        out_shape=lambda ensemble, batch: (*max(ensemble, batch, key=len), 4),
+        getkey=getkey,
+    )
+
+    _test_ensemble(
+        make_model=eqx.Partial(eqx.nn.Linear, "scalar", "scalar"),
+        in_shape=(),
+        out_dims="",
+        out_shape=lambda ensemble, batch: max(ensemble, batch, key=len),
+        getkey=getkey,
+    )
+
 
 def test_identity(getkey):
     identity1 = eqx.nn.Identity()
@@ -58,6 +89,14 @@ def test_identity(getkey):
     assert jnp.all(x == identity2(x))
     assert jnp.all(x == identity3(x))
     assert jnp.all(x == identity4(x))
+
+    _test_ensemble(
+        make_model=eqx.nn.Identity,
+        in_shape=(),
+        out_dims="",
+        out_shape=lambda _, batch: batch,
+        getkey=getkey,
+    )
 
 
 def test_dropout_basic(getkey):
@@ -217,6 +256,22 @@ def test_mlp(getkey):
     x = jrandom.normal(getkey(), (2,))
     assert mlp(x).shape == (3,)
     assert [mlp.layers[i].use_bias for i in range(0, 3)] == [True, True, False]
+
+    _test_ensemble(
+        make_model=eqx.Partial(eqx.nn.MLP, 2, 3, 8, 2),
+        in_shape=(2,),
+        out_dims="out",
+        out_shape=lambda ensemble, batch: (*max(ensemble, batch, key=len), 3),
+        getkey=getkey,
+    )
+
+    _test_ensemble(
+        make_model=eqx.Partial(eqx.nn.MLP, "scalar", "scalar", 2, 2),
+        in_shape=(),
+        out_dims="",
+        out_shape=lambda ensemble, batch: max(ensemble, batch, key=len),
+        getkey=getkey,
+    )
 
 
 def test_mlp_learnt_activation():
