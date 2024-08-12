@@ -169,7 +169,7 @@ class Conv(Module, strict=True):
         dtype = default_floating_dtype() if dtype is None else dtype
         wkey, bkey = jrandom.split(key, 2)
         grouped_in_channels = in_channels // groups
-        lim = 1 / np.sqrt(grouped_in_channels * math.prod(kernel_size))
+        lim = 1 / math.sqrt(grouped_in_channels * math.prod(kernel_size))
         wshape = (out_channels, grouped_in_channels) + kernel_size
         weight = default_init(wkey, wshape, dtype, lim)
         wdims = " ".join(str(dim) for dim in wshape)
@@ -524,7 +524,7 @@ class ConvTranspose(Module, strict=True):
                 raise ValueError("Must have `output_padding < stride` (elementwise).")
 
         grouped_in_channels = in_channels // groups
-        lim = 1 / np.sqrt(grouped_in_channels * math.prod(kernel_size))
+        lim = 1 / math.sqrt(grouped_in_channels * math.prod(kernel_size))
         wshape = (out_channels, grouped_in_channels) + kernel_size
         weight = default_init(wkey, wshape, dtype, lim)
         wdims = " ".join(str(dim) for dim in wshape)
@@ -554,6 +554,7 @@ class ConvTranspose(Module, strict=True):
                     "`padding_mode == 'CIRCULAR'` is only implemented for 'SAME' or"
                     "'SAME_LOWER' padding."
                 )
+
         self.num_spatial_dims = num_spatial_dims
         self.in_channels = in_channels
         self.out_channels = out_channels
