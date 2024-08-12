@@ -30,7 +30,7 @@ def _store(
         our_item = name_to_item[name]
     except KeyError:
         our_index = len(index_to_message)
-        name_to_item[name] = EnumerationItem(np.array(our_index, dtype=np.int32), cls)
+        name_to_item[name] = EnumerationItem(np.array(our_index, dtype=np.int32), cls)  # pyright: ignore
         index_to_message.append(message)
         return our_index
     else:
@@ -145,6 +145,11 @@ class EnumerationItem(Module):
     # #289.
     _enumeration: Any = field(static=True)
 
+    if TYPE_CHECKING:
+
+        def __init__(self, x):
+            pass
+
     def __eq__(self, other) -> Bool[Array, ""]:  # pyright: ignore
         if isinstance(other, EnumerationItem):
             if self._enumeration is other._enumeration:
@@ -200,11 +205,9 @@ if TYPE_CHECKING:
     from typing_extensions import Self
 
     class _Sequence(type):
-        def __getitem__(cls, item) -> str:
-            ...
+        def __getitem__(cls, item) -> str: ...
 
-        def __len__(cls) -> int:
-            ...
+        def __len__(cls) -> int: ...
 
     class Enumeration(  # pyright: ignore
         enum.Enum, EnumerationItem, metaclass=_Sequence
@@ -214,12 +217,10 @@ if TYPE_CHECKING:
         _base_offsets: ClassVar[dict["Enumeration", int]]
 
         @classmethod
-        def promote(cls, item: "Enumeration") -> Self:
-            ...
+        def promote(cls, item: "Enumeration") -> Self: ...
 
         @classmethod
-        def where(cls, pred: Bool[ArrayLike, "..."], a: Self, b: Self) -> Self:
-            ...
+        def where(cls, pred: Bool[ArrayLike, "..."], a: Self, b: Self) -> Self: ...
 
 else:
     _Enumeration = doc_repr(Any, "Enumeration")

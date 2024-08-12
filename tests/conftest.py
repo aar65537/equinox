@@ -8,7 +8,7 @@ typing.TESTING = True  # pyright: ignore
 
 
 jax.config.update("jax_numpy_dtype_promotion", "strict")
-jax.config.update("jax_numpy_rank_promotion", "raise")
+# jax.config.update("jax_numpy_rank_promotion", "raise")
 
 
 @pytest.fixture

@@ -7,6 +7,9 @@ from ._ad import (
     filter_custom_jvp as filter_custom_jvp,
     filter_custom_vjp as filter_custom_vjp,
     filter_grad as filter_grad,
+    filter_hessian as filter_hessian,
+    filter_jacfwd as filter_jacfwd,
+    filter_jacrev as filter_jacrev,
     filter_jvp as filter_jvp,
     filter_value_and_grad as filter_value_and_grad,
     filter_vjp as filter_vjp,
@@ -50,6 +53,7 @@ from ._serialisation import (
     tree_deserialise_leaves as tree_deserialise_leaves,
     tree_serialise_leaves as tree_serialise_leaves,
 )
+from ._sharding import filter_shard as filter_shard
 from ._tree import (
     tree_at as tree_at,
     tree_check as tree_check,

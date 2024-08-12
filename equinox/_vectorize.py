@@ -244,8 +244,7 @@ def filter_vectorize(
     *,
     in_dims: PyTree[DimsSpec] = _SCALAR,
     out_dims: Union[Dims, Iterable[Dims]] = _SCALAR,
-) -> Callable[[Callable[_P, _T]], Callable[_P, _T]]:
-    ...
+) -> Callable[[Callable[_P, _T]], Callable[_P, _T]]: ...
 
 
 @overload
@@ -254,8 +253,7 @@ def filter_vectorize(
     *,
     in_dims: PyTree[DimsSpec] = _SCALAR,
     out_dims: Union[Dims, Iterable[Dims]] = _SCALAR,
-) -> Callable[_P, _T]:
-    ...
+) -> Callable[_P, _T]: ...
 
 
 def filter_vectorize(

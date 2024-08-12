@@ -59,7 +59,7 @@ import jax.numpy as jnp
 import jax.tree_util as jtu
 from jaxtyping import Array, ArrayLike, Bool
 
-from ..._ad import filter_closure_convert, filter_custom_vjp
+from ..._ad import filter_closure_convert, filter_custom_jvp, filter_custom_vjp
 from ..._errors import error_if
 from ..._filters import combine, filter, is_array, is_inexact_array, partition
 from ..._module import Static
@@ -246,9 +246,10 @@ def checkpointed_while_loop(
     cond_fun_ = jtu.tree_map(_stop_gradient, cond_fun_)
     body_fun_ = filter_closure_convert(body_fun_, init_val_)
     vjp_arg = (init_val_, body_fun_)
-    _, _, _, final_val = _checkpointed_while_loop(
+    final_val_ = _checkpointed_while_loop(
         vjp_arg, cond_fun_, checkpoints, buffers_, max_steps
     )
+    _, _, _, final_val = _stop_gradient_on_unperturbed(init_val_, final_val_, body_fun_)
     return final_val
 
 
@@ -264,9 +265,10 @@ def _checkpointed_while_loop(vjp_arg, cond_fun, checkpoints, buffers, max_steps)
     """Uncheckpointed forward used when not differentiating."""
     del checkpoints, buffers, max_steps
     init_val, body_fun = vjp_arg
-    _body_fun = lambda x: body_fun(x)  # hashable wrapper; JAX issue #13554
     while_loop = jax.named_call(lax.while_loop, name="checkpointed-no-vjp")
-    return while_loop(cond_fun, _body_fun, init_val)
+    # Hashable wrapper; JAX issue #13554 and
+    # https://github.com/patrick-kidger/equinox/issues/768
+    return while_loop(lambda x: cond_fun(x), lambda x: body_fun(x), init_val)
 
 
 def _scalar_index(i, x):
@@ -765,7 +767,11 @@ def _checkpointed_while_loop_bwd(
     )
     del cond_fun, perturbed
     num_steps, init_residual_steps, init_residuals, filled_buffers = remainders
-    num_steps, init_residual_steps = nonbatchable((num_steps, init_residual_steps))
+    # `allow_constant_across_batch` to handle
+    # https://github.com/patrick-kidger/optimistix/issues/67
+    num_steps, init_residual_steps = nonbatchable(
+        (num_steps, init_residual_steps), allow_constant_across_batch=True
+    )
 
     def _cond_fun(carry):
         _, step_grad_val, *_ = carry
@@ -978,6 +984,8 @@ def _checkpointed_while_loop_bwd(
     # Do this inside the dynamic context of a `jax.eval_shape` so that it's as cheap as
     # possible, without extra tracing.
     def _resolve_perturb_val():
+        # TODO: is this function still necessary now that we have
+        # _stop_gradient_on_unperturbed_jvp?
         init_val_buffers = tree_at(
             buffers(_is_none), init_val, filled_buffers, is_leaf=_is_none
         )
@@ -1166,3 +1174,105 @@ def _checkpointed_while_loop_bwd(
     *_, grad_init_val, grad_body_fun, _, _ = final_carry
     out = grad_init_val, grad_body_fun
     return out
+
+
+def _resolve_perturb_val(final_val, body_fun, perturb_final_val, perturb_body_fun):
+    def _resolve_perturb_val_impl():
+        perturb_val = perturb_final_val
+        assert jtu.tree_structure(final_val) == jtu.tree_structure(perturb_val)
+
+        while True:
+            # `body_fun` is included so that we also track perturbatations on that.
+            perturb_pair = (perturb_body_fun, perturb_val)
+            dynamic, static = partition((body_fun, final_val), perturb_pair)
+            new_perturb_val = sentinel = object()
+
+            @jax.custom_jvp
+            def _record_symbolic_zeros(_dynamic_out):
+                return _dynamic_out
+
+            def _record_symbolic_zeros_jvp(primals, tangents):
+                (primals,) = primals
+                (tangents,) = tangents
+                nonlocal new_perturb_val
+                new_perturb_val = jtu.tree_map(_not_symbolic_zero, tangents)
+                return primals, tangents
+
+            _record_symbolic_zeros.defjvp(
+                _record_symbolic_zeros_jvp, symbolic_zeros=True
+            )
+
+            def _to_linearize(_dynamic):
+                _body_fun, _val = combine(_dynamic, static)
+                _out = _body_fun(_val)
+                _dynamic_out, _static_out = partition(_out, is_inexact_array)
+                _dynamic_out = _record_symbolic_zeros(_dynamic_out)
+                _out = combine(_dynamic_out, _static_out)
+                return _out
+
+            # Not `jax.jvp`, so as not to error if `body_fun` has any `custom_vjp`s.
+            jax.linearize(_to_linearize, dynamic)
+            if new_perturb_val is sentinel:
+                # `_dynamic_out` in `_to_linearize` had no JVP tracers at all, despite
+                # `_dynamic` having them. Presumably the user's `_body_fun` has no
+                # differentiable dependency whatsoever.
+                # This can happen if all the autograd is happening through
+                # `perturb_body_fun`.
+                return Static(perturb_val)
+            assert jtu.tree_structure(
+                perturb_val, is_leaf=_is_none
+            ) == jtu.tree_structure(new_perturb_val, is_leaf=_is_none)
+            new_perturb_val = jtu.tree_map(
+                lambda x, y: False if (x is False and y is None) else y,
+                perturb_val,
+                new_perturb_val,
+            )
+            assert jtu.tree_structure(perturb_val) == jtu.tree_structure(
+                new_perturb_val
+            )
+            if tree_equal(perturb_val, new_perturb_val):
+                jtu.tree_map(_assert_bool, perturb_val)
+                if getattr(typing, "TESTING", False):
+                    print("stop_gradient_perturb_val", perturb_val)
+                return Static(perturb_val)
+            else:
+                perturb_val = jtu.tree_map(operator.or_, perturb_val, new_perturb_val)
+
+    perturb_val = jax.eval_shape(_resolve_perturb_val_impl).value
+    return perturb_val
+
+
+@filter_custom_jvp
+def _stop_gradient_on_unperturbed(init_val, final_val, body_fun):
+    del body_fun
+    return final_val
+
+
+def _perturb_to_tang(t, p):
+    if t is None:
+        return None
+    elif p is None:
+        return None
+    elif p is False:
+        return None
+    elif p is True:
+        return t
+    else:
+        assert False
+
+
+@_stop_gradient_on_unperturbed.def_jvp
+def _stop_gradient_on_unperturbed_jvp(primals, tangents):
+    init_val, final_val, body_fun = primals
+    t_init_val, t_final_val, t_body_fun = tangents
+    del primals, tangents
+    perturb_val, perturb_body_fun = jtu.tree_map(
+        lambda _, t: t is not None, (init_val, body_fun), (t_init_val, t_body_fun)
+    )
+    perturb_val = _resolve_perturb_val(
+        init_val, body_fun, perturb_val, perturb_body_fun
+    )
+    t_final_val = jtu.tree_map(
+        _perturb_to_tang, t_final_val, perturb_val, is_leaf=_is_none
+    )
+    return final_val, t_final_val

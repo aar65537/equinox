@@ -15,15 +15,17 @@ from collections.abc import Callable
 from typing import Any, cast, Optional, Protocol, TYPE_CHECKING, TypeVar, Union
 from typing_extensions import dataclass_transform, ParamSpec
 
+import jax
 import jax._src.traceback_util as traceback_util
 import jax.tree_util as jtu
 import numpy as np
 from jaxtyping import Array, Bool, PyTreeDef
 
 from ._better_abstract import ABCMeta, dataclass
-from ._caches import internal_lru_caches
+from ._caches import cache_clears
 from ._custom_types import DimsSpec
 from ._doc_utils import doc_repr
+from ._filters import is_array_like
 from ._pretty_print import tree_pformat
 from ._tree import tree_equal
 
@@ -286,7 +288,8 @@ class _ModuleMeta(ABCMeta):  # pyright: ignore
                 "hold, then consider using `__check_init__` instead. This is an "
                 "Equinox-specific extension that is always ran. See here for more "
                 "details: "
-                "https://docs.kidger.site/equinox/api/module/advanced_fields/#checking-invariants"  # noqa: E501
+                "https://docs.kidger.site/equinox/api/module/advanced_fields/#checking-invariants",  # noqa: E501
+                stacklevel=2,
             )
 
         # Add support for `eqx.field(converter=...)` when using `__post_init__`.
@@ -342,6 +345,34 @@ class _ModuleMeta(ABCMeta):  # pyright: ignore
         )
         # [Step 3b] -- finish off building `__init__` methods. Until we'd done
         # dataclass'ification then we didn't necessarily have our `__init__` method.
+
+        # Set annotation to the converter input. This is useful for runtime type
+        # checkers.
+        # Note that mutating the `__init__.__annotations__` is okay, as it was created
+        # by the dataclass decorator on the previous line, so nothing else owns it.
+        for f in dataclasses.fields(cls):
+            if f.name not in cls.__init__.__annotations__:
+                continue  # Odd behaviour, so skip.
+            try:
+                converter = f.metadata["converter"]
+            except KeyError:
+                pass
+            else:
+                try:
+                    signature = inspect.signature(converter)
+                except ValueError:
+                    # e.g. `inspect.signature(str)` fails
+                    converter_annotation = Any
+                else:
+                    parameters = list(signature.parameters.values())
+                    if len(parameters) == 0:
+                        # No idea what happened, but play it safe.
+                        converter_annotation = Any
+                    else:
+                        converter_annotation = parameters[0].annotation
+                        if converter_annotation is inspect.Signature.empty:
+                            converter_annotation = Any
+                cls.__init__.__annotations__[f.name] = converter_annotation
 
         # Registering here records that the `dataclass(...)` call has happened.
         _has_dataclass_init[cls] = has_dataclass_init
@@ -456,11 +487,32 @@ class _ModuleMeta(ABCMeta):  # pyright: ignore
                     if not has_abstract_name:
                         # Invariant: abstract classes have names beginning with
                         # `Abstract`.
-                        raise TypeError(
+                        main = (
                             "Abstract strict `eqx.Module`s must be named starting "
                             f"with 'Abstract' or '_Abstract'. Got {name} when defining "
-                            f"{cls.__module__}.{cls.__qualname__}.",
+                            f"{cls.__module__}.{cls.__qualname__}."
                         )
+                        if _is_force_abstract[cls]:
+                            raise TypeError(main)
+                        inner = []
+                        if len(cls.__abstractmethods__) > 0:
+                            inner.append(
+                                f"abstract methods: {list(cls.__abstractmethods__)}"
+                            )
+                        if len(cls.__abstractvars__) > 0:
+                            inner.append(
+                                f"abstract variables: {list(cls.__abstractvars__)}"
+                            )
+                        if len(cls.__abstractclassvars__) > 0:
+                            inner.append(
+                                (
+                                    "abstract class variables: "
+                                    f"{list(cls.__abstractclassvars__)}"
+                                )
+                            )
+                        inner = ", ".join(inner)
+                        inner = " " + inner + "."
+                        raise TypeError(main + inner)
                 else:
                     if has_abstract_name:
                         # Invariant: concrete classes do not have names beginning with
@@ -514,9 +566,14 @@ class _ModuleMeta(ABCMeta):  # pyright: ignore
 
     # This method is called whenever you initialise a module: `MyModule(...)`
     def __call__(cls, *args, **kwargs):
+        __tracebackhide__ = True
         if _is_force_abstract[cls]:
             # Any other is-abstract checks will be handled in super().__call__.
             raise TypeError("Cannot instantiate abstract `equinox.Module`.")
+        if _has_dataclass_init[cls]:
+            for x in jtu.tree_leaves((args, kwargs)):
+                _warn_jax_transformed_function(cls, x)
+            # else it's handled in __setattr__, but that isn't called here.
         # [Step 1] Modules are immutable -- except during construction. So defreeze
         # before init.
         post_init = getattr(cls, "__post_init__", None)
@@ -646,6 +703,90 @@ class _Initable:
     pass
 
 
+_transform_types = {
+    type(transform(lambda x: x))
+    for transform in (
+        jax.jit,
+        jax.grad,
+        jax.vmap,
+        jax.value_and_grad,
+        jax.jacfwd,
+        jax.jacrev,
+        jax.hessian,
+        jax.custom_jvp,
+        jax.custom_vjp,
+        jax.checkpoint,  # pyright: ignore
+        jax.pmap,
+    )
+}
+
+
+def _warn_jax_transformed_function(cls, x):
+    # not `isinstance`, just in case JAX every tries to override `__instancecheck__`.
+    if type(x) in _transform_types:
+
+        class _JaxTransformException(Exception):
+            pass
+
+        def _is_array_like(x):
+            if is_array_like(x):
+                raise _JaxTransformException
+
+        while True:
+            try:
+                x = x.__wrapped__
+            except AttributeError:
+                break
+            try:
+                jtu.tree_map(_is_array_like, x)
+            except _JaxTransformException:
+                warnings.warn(
+                    f"""
+Possibly assigning a JAX-transformed callable as an attribute on
+{cls.__module__}.{cls.__qualname__}. This will not have any of its parameters updated.
+
+For example, the following code is buggy:
+```python
+class MyModule(eqx.Module):
+vmap_linear: Callable
+
+def __init__(self, ...):
+    self.vmap_linear = jax.vmap(eqx.nn.Linear(...))
+
+def __call__(self, ...):
+    ... = self.vmap_linear(...)
+```
+This is because the callable returned from `jax.vmap` is *not* a PyTree. This means that
+the parameters inside the `eqx.nn.Linear` layer will not receive gradient updates.
+
+You can most easily fix this either by applying the wrapper at `__call__` time:
+```python
+class MyModule(eqx.Module):
+linear: Callable
+
+def __init__(self, ...):
+    self.linear = eqx.nn.Linear(...)
+
+def __call__(self, ...):
+    ... = jax.vmap(self.linear)(...)
+```
+or by using `eqx.filter_vmap` instead (which *does* return a PyTree):
+```python
+class MyModule(eqx.Module):
+vmap_linear: Callable
+
+def __init__(self, ...):
+    self.vmap_linear = eqx.filter_vmap(eqx.nn.Linear(...))
+
+def __call__(self, ...):
+    ... = self.vmap_linear(...)
+```
+""",
+                    stacklevel=3,
+                )
+                break
+
+
 @ft.lru_cache(maxsize=128)
 def _make_initable(cls: _ModuleMeta, init, post_init, wraps: bool) -> _ModuleMeta:
     # Used as part of the key. Don't cache if these have changed.
@@ -699,6 +840,7 @@ went uncaught, possibly leading to silently wrong behaviour.
 """
                 )
             else:
+                _warn_jax_transformed_function(type(self), value)
                 object.__setattr__(self, name, value)
         else:
             raise AttributeError(f"Cannot set attribute {name}")
@@ -717,7 +859,7 @@ went uncaught, possibly leading to silently wrong behaviour.
     return _InitableModule
 
 
-internal_lru_caches.append(_make_initable)
+cache_clears.append(_make_initable.cache_clear)
 
 
 def _convert_fields(module, init: bool):
@@ -950,6 +1092,12 @@ class BoundMethod(Module):
         return self.__func__.__get__(  # pyright: ignore
             self.__self__, type(self.__self__)
         )
+
+    # This should be unnecessary in principle. In practice something goes wrong on
+    # Python 3.9 and it returns the wrong thing.
+    @property
+    def __signature__(self):
+        return inspect.signature(self.__wrapped__)
 
 
 #

@@ -58,7 +58,6 @@ def _filter_jit_cache(fun_names, jitkwargs):
 
 def _bind(signature, args, kwargs):
     bound = signature.bind(*args, **kwargs)
-    bound.apply_defaults()
     args = bound.args
     kwargs = bound.kwargs
     return args, kwargs
@@ -109,17 +108,6 @@ except Exception:
     # Unused dummy
     class XlaRuntimeError(Exception):
         pass
-
-
-_eqx_on_error_msg = """
--------
-This error occurred during the runtime of your JAX program. Setting the environment
-variable `EQX_ON_ERROR=breakpoint` is usually the most useful way to debug such errors.
-(This can be navigated using most of the usual commands for the Python debugger:
-`u` and `d` to move through stack frames, the name of a variable to print its value,
-etc.) See also `https://docs.kidger.site/equinox/api/errors/#equinox.error_if` for more
-information.
-"""
 
 
 def _modify_traceback(e: Exception):
@@ -213,7 +201,6 @@ class _JitWrapper(Module):
             if "EqxRuntimeError: " in msg:
                 _, msg = msg.split("EqxRuntimeError: ", 1)
                 msg, *_ = msg.rsplit("\n\nAt:\n", 1)
-                msg = msg + _eqx_on_error_msg
                 e.args = (msg,)
                 if jax.config.jax_traceback_filtering in (  # pyright: ignore
                     None,
@@ -245,8 +232,7 @@ def filter_jit(
     donate: Literal[
         "all", "all-except-first", "warn", "warn-except-first", "none"
     ] = "none",
-) -> Callable[[Callable[_P, _T]], Callable[_P, _T]]:
-    ...
+) -> Callable[[Callable[_P, _T]], Callable[_P, _T]]: ...
 
 
 @overload
@@ -256,8 +242,7 @@ def filter_jit(
     donate: Literal[
         "all", "all-except-first", "warn", "warn-except-first", "none"
     ] = "none",
-) -> Callable[_P, _T]:
-    ...
+) -> Callable[_P, _T]: ...
 
 
 @doc_remove_args("jitkwargs")

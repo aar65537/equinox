@@ -8,7 +8,7 @@ import jax.numpy as jnp
 from jaxtyping import Array, Float, PRNGKeyArray
 
 from .._custom_types import sentinel
-from .._misc import left_broadcast_to
+from .._misc import default_floating_dtype, left_broadcast_to
 from .._module import field, Module
 from ._stateful import State
 
@@ -63,6 +63,7 @@ class LayerNorm(Module, strict=True):
         eps: float = 1e-5,
         use_weight: bool = True,
         use_bias: bool = True,
+        dtype=None,
         *,
         elementwise_affine: Optional[bool] = None,
     ):
@@ -72,6 +73,10 @@ class LayerNorm(Module, strict=True):
         - `eps`: Value added to denominator for numerical stability.
         - `use_weight`: Whether the module has learnable affine weights.
         - `use_bias`: Whether the module has learnable affine biases.
+        - `dtype`: The dtype to use for the weight and the bias in this layer if
+            `use_weight` or `use_bias` is set to `True`.
+            Defaults to either `jax.numpy.float32` or `jax.numpy.float64` depending
+            on whether JAX is in 64-bit mode.
         - `elementwise_affine`: Deprecated alternative to `use_weight` and `use_bias`.
         """
         if isinstance(shape, int):
@@ -89,18 +94,16 @@ class LayerNorm(Module, strict=True):
             )
         self.use_weight = use_weight
         self.use_bias = use_bias
-        self.weight = jnp.ones(shape) if use_weight else None
-        self.bias = jnp.zeros(shape) if use_bias else None
+        self.weight = jnp.ones(shape, dtype=dtype) if use_weight else None
+        self.bias = jnp.zeros(shape, dtype=dtype) if use_bias else None
 
     @overload
-    def __call__(self, x: Array, *, key: Optional[PRNGKeyArray] = None) -> Array:
-        ...
+    def __call__(self, x: Array, *, key: Optional[PRNGKeyArray] = None) -> Array: ...
 
     @overload
     def __call__(
         self, x: Array, state: State, *, key: Optional[PRNGKeyArray] = None
-    ) -> tuple[Array, State]:
-        ...
+    ) -> tuple[Array, State]: ...
 
     @jax.named_scope("eqx.nn.LayerNorm")
     def __call__(
@@ -194,6 +197,7 @@ class GroupNorm(Module, strict=True):
         channels: Optional[int] = None,
         eps: float = 1e-5,
         channelwise_affine: bool = True,
+        dtype=None,
     ):
         """**Arguments:**
 
@@ -202,6 +206,10 @@ class GroupNorm(Module, strict=True):
             `None`) if `channelwise_affine=False`.
         - `eps`: Value added to denominator for numerical stability.
         - `channelwise_affine`: Whether the module has learnable affine parameters.
+        - `dtype`: The dtype to use for the weight and the bias in this layer if
+            `channelwise_affine` is set to `True`.
+            Defaults to either `jax.numpy.float32` or `jax.numpy.float64` depending
+            on whether JAX is in 64-bit mode.
         """
         if (channels is not None) and (channels % groups != 0):
             raise ValueError("The number of groups must divide the number of channels.")
@@ -214,18 +222,16 @@ class GroupNorm(Module, strict=True):
         self.channels = channels
         self.eps = eps
         self.channelwise_affine = channelwise_affine
-        self.weight = jnp.ones(channels) if channelwise_affine else None
-        self.bias = jnp.zeros(channels) if channelwise_affine else None
+        self.weight = jnp.ones(channels, dtype=dtype) if channelwise_affine else None
+        self.bias = jnp.zeros(channels, dtype=dtype) if channelwise_affine else None
 
     @overload
-    def __call__(self, x: Array, *, key: Optional[PRNGKeyArray] = None) -> Array:
-        ...
+    def __call__(self, x: Array, *, key: Optional[PRNGKeyArray] = None) -> Array: ...
 
     @overload
     def __call__(
         self, x: Array, state: State, *, key: Optional[PRNGKeyArray] = None
-    ) -> tuple[Array, State]:
-        ...
+    ) -> tuple[Array, State]: ...
 
     @jax.named_scope("eqx.nn.GroupNorm")
     def __call__(
@@ -307,6 +313,7 @@ class RMSNorm(Module, strict=True):
         eps: float = 1e-5,
         use_weight: bool = True,
         use_bias: bool = True,
+        dtype=None,
     ):
         """**Arguments:**
 
@@ -314,7 +321,12 @@ class RMSNorm(Module, strict=True):
         - `eps`: Value added to denominator for numerical stability.
         - `use_weight`: Whether the module has learnable affine weights.
         - `use_bias`: Whether the module has learnable affine shift.
+        - `dtype`: The dtype to use for the weight and the bias in this layer if
+            `use_weight` or `use_bias` is set to `True`.
+            Defaults to either `jax.numpy.float32` or `jax.numpy.float64` depending
+            on whether JAX is in 64-bit mode.
         """
+        dtype = default_floating_dtype() if dtype is None else dtype
         if isinstance(shape, int):
             shape = (shape,)
         else:
@@ -323,18 +335,16 @@ class RMSNorm(Module, strict=True):
         self.eps = eps
         self.use_weight = use_weight
         self.use_bias = use_bias
-        self.weight = jnp.ones(shape) if use_weight else None
-        self.bias = jnp.zeros(shape) if use_bias else None
+        self.weight = jnp.ones(shape, dtype=dtype) if use_weight else None
+        self.bias = jnp.zeros(shape, dtype=dtype) if use_bias else None
 
     @overload
-    def __call__(self, x: Array, *, key: Optional[PRNGKeyArray] = None) -> Array:
-        ...
+    def __call__(self, x: Array, *, key: Optional[PRNGKeyArray] = None) -> Array: ...
 
     @overload
     def __call__(
         self, x: Array, state: State, *, key: Optional[PRNGKeyArray] = None
-    ) -> tuple[Array, State]:
-        ...
+    ) -> tuple[Array, State]: ...
 
     @jax.named_scope("eqx.nn.RMSNorm")
     def __call__(
@@ -366,8 +376,13 @@ class RMSNorm(Module, strict=True):
                 f"Received `shape={self.shape} and `x.shape={x.shape}`. You might need "
                 "to replace `rms_norm(x)` with `jax.vmap(rms_norm)(x)`.\n"
             )
-        inv_rms = jax.lax.rsqrt(jnp.mean(x**2) + self.eps)
-        out = inv_rms * x
+
+        with jax.numpy_dtype_promotion("standard"):
+            dtype = jnp.result_type(x.dtype, jnp.float32)
+
+        inv_rms = jax.lax.rsqrt(jnp.mean(x.astype(dtype) ** 2) + self.eps)
+        out = (inv_rms * x.astype(dtype)).astype(x.dtype)
+
         if self.use_weight:
             out = self.weight * out
         if self.use_bias:

@@ -7,7 +7,9 @@ import jax.numpy as jnp
 import jax.random as jrandom
 from jaxtyping import Array, PRNGKeyArray
 
+from .._misc import default_floating_dtype
 from .._module import field, Module
+from ._misc import default_init
 
 
 class GRUCell(Module, strict=True):
@@ -45,6 +47,7 @@ class GRUCell(Module, strict=True):
         input_size: int,
         hidden_size: int,
         use_bias: bool = True,
+        dtype=None,
         *,
         key: PRNGKeyArray,
     ):
@@ -54,26 +57,23 @@ class GRUCell(Module, strict=True):
         - `hidden_size`: The dimensionality of the hidden state passed along between
             time steps.
         - `use_bias`: Whether to add on a bias after each update.
+        - `dtype`: The dtype to use for all weights and biases in this GRU cell.
+            Defaults to either `jax.numpy.float32` or `jax.numpy.float64` depending on
+            whether JAX is in 64-bit mode.
         - `key`: A `jax.random.PRNGKey` used to provide randomness for parameter
             initialisation. (Keyword only argument.)
         """
-
+        dtype = default_floating_dtype() if dtype is None else dtype
         ihkey, hhkey, bkey, bkey2 = jrandom.split(key, 4)
         lim = math.sqrt(1 / hidden_size)
 
-        self.weight_ih = jrandom.uniform(
-            ihkey, (3 * hidden_size, input_size), minval=-lim, maxval=lim
-        )
-        self.weight_hh = jrandom.uniform(
-            hhkey, (3 * hidden_size, hidden_size), minval=-lim, maxval=lim
-        )
+        ihshape = (3 * hidden_size, input_size)
+        self.weight_ih = default_init(ihkey, ihshape, dtype, lim)
+        hhshape = (3 * hidden_size, hidden_size)
+        self.weight_hh = default_init(hhkey, hhshape, dtype, lim)
         if use_bias:
-            self.bias = jrandom.uniform(
-                bkey, (3 * hidden_size,), minval=-lim, maxval=lim
-            )
-            self.bias_n = jrandom.uniform(
-                bkey2, (hidden_size,), minval=-lim, maxval=lim
-            )
+            self.bias = default_init(bkey, (3 * hidden_size,), dtype, lim)
+            self.bias_n = default_init(bkey2, (hidden_size,), dtype, lim)
         else:
             self.bias = None
             self.bias_n = None
@@ -127,11 +127,11 @@ class LSTMCell(Module, strict=True):
                 self.cell = LSTMCell(...)
 
             def __call__(self, xs):
-                scan_fn = lambda state, input: (cell(input, state), None)
+                scan_fn = lambda state, input: (self.cell(input, state), None)
                 init_state = (jnp.zeros(self.cell.hidden_size),
                               jnp.zeros(self.cell.hidden_size))
-                final_state, _ = jax.lax.scan(scan_fn, init_state, xs)
-                return final_state
+                (h, c), _ = jax.lax.scan(scan_fn, init_state, xs)
+                return h, c
         ```
     """
 
@@ -147,6 +147,7 @@ class LSTMCell(Module, strict=True):
         input_size: int,
         hidden_size: int,
         use_bias: bool = True,
+        dtype=None,
         *,
         key: PRNGKeyArray,
     ):
@@ -156,25 +157,22 @@ class LSTMCell(Module, strict=True):
         - `hidden_size`: The dimensionality of the hidden state passed along between
             time steps.
         - `use_bias`: Whether to add on a bias after each update.
+        - `dtype`: The dtype to use for all weights and biases in this LSTM cell.
+            Defaults to either `jax.numpy.float32` or `jax.numpy.float64` depending on
+            whether JAX is in 64-bit mode.
         - `key`: A `jax.random.PRNGKey` used to provide randomness for parameter
             initialisation. (Keyword only argument.)
         """
-
+        dtype = default_floating_dtype() if dtype is None else dtype
         ihkey, hhkey, bkey = jrandom.split(key, 3)
         lim = math.sqrt(1 / hidden_size)
 
-        self.weight_ih = jrandom.uniform(
-            ihkey, (4 * hidden_size, input_size), minval=-lim, maxval=lim
-        )
-        self.weight_hh = jrandom.uniform(
-            hhkey, (4 * hidden_size, hidden_size), minval=-lim, maxval=lim
-        )
-        if use_bias:
-            self.bias = jrandom.uniform(
-                bkey, (4 * hidden_size,), minval=-lim, maxval=lim
-            )
-        else:
-            self.bias = None
+        ihshape = (4 * hidden_size, input_size)
+        self.weight_ih = default_init(ihkey, ihshape, dtype, lim)
+        hhshape = (4 * hidden_size, hidden_size)
+        self.weight_hh = default_init(hhkey, hhshape, dtype, lim)
+        bshape = (4 * hidden_size,)
+        self.bias = default_init(bkey, bshape, dtype, lim) if use_bias else None
 
         self.input_size = input_size
         self.hidden_size = hidden_size

@@ -77,7 +77,7 @@ def _replace_none(x):
 
 
 def _get_second(x, y):
-    return y
+    return None if x is None else y
 
 
 def _make_spec(x, y):
@@ -128,7 +128,7 @@ class Flatten:
                 assert treedef_out_old == treedef_out
                 assert tree_equal(static_out_old, static_out)
             like = jtu.tree_map(_replace_none, like, is_leaf=_is_none)
-            like = jtu.tree_map(_get_second, dynamic_out, like)
+            like = jtu.tree_map(_get_second, dynamic_out, like, is_leaf=_is_none)
             flat_like, treedef_like = jtu.tree_flatten(like)
             flat_like = [None if x is _dummy_none else x for x in flat_like]
             assert treedef_like == treedef_out
@@ -267,8 +267,11 @@ def filter_primitive_bind(prim: jax.core.Primitive, *args) -> PyTree:
 
 
 # Useful helper for JVP rules of higher-order primitives.
-def materialise_zeros(primal, tangent):
-    if tangent is None and is_array_like(primal):
+def materialise_zeros(primal, tangent, allow_struct=False):
+    arraylike = is_array_like(primal)
+    if allow_struct:
+        arraylike = arraylike or isinstance(primal, jax.ShapeDtypeStruct)
+    if tangent is None and arraylike:
         tangent = _zero_from_primal(primal)
         return ad.instantiate_zeros(tangent)
     else:
@@ -410,6 +413,10 @@ def _vprim_transpose(
         axis_size=__axis_size,
         axis_name=__axis_name,
     )
+    if prim.multiple_results:
+        cts = tuple(None if type(c) is ad.Zero else c for c in cts)
+    else:
+        cts = None if type(cts) is ad.Zero else cts
     return transpose(cts, *inputs)
 
 

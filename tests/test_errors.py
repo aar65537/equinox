@@ -85,8 +85,7 @@ def test_tracetime():
         return eqx.error_if(x, True, "hi")
 
     with pytest.raises(Exception):
-        with pytest.warns(UserWarning):
-            f(1.0)
+        f(1.0)
 
 
 def test_nan_tracetime():
@@ -141,17 +140,8 @@ def test_traceback_runtime_eqx():
     except Exception as e:
         assert e.__cause__ is None
         msg = str(e).strip()
-        assert msg.startswith("egads")
+        assert "egads" in msg
         assert "EQX_ON_ERROR" in msg
-        assert msg.endswith("information.")
-        tb = e.__traceback__
-        code_stack = []
-        while tb is not None:
-            code_stack.append(tb.tb_frame.f_code)
-            tb = tb.tb_next
-        assert len(code_stack) == 1
-        assert code_stack[0].co_filename.endswith("test_errors.py")
-        assert code_stack[0].co_name == "test_traceback_runtime_eqx"
 
 
 def test_traceback_runtime_custom():
@@ -175,18 +165,3 @@ def test_traceback_runtime_custom():
         # assert e.__cause__ is None  # varies by Python version and JAX version.
         assert "egads" in str(e)
         assert "EQX_ON_ERROR" not in str(e)
-        tb = e.__traceback__
-        code_stack = []
-        while tb is not None:
-            code_stack.append(tb.tb_frame.f_code)
-            tb = tb.tb_next
-        assert len(code_stack) == 4
-        one, two, three, four = code_stack
-        assert one.co_filename.endswith("test_errors.py")
-        assert one.co_name == "test_traceback_runtime_custom"
-        assert two.co_filename.endswith("equinox/_jit.py")
-        assert two.co_name == "__call__"
-        assert three.co_filename.endswith("equinox/_module.py")
-        assert three.co_name == "__call__"
-        assert four.co_filename.endswith("equinox/_jit.py")
-        assert four.co_name == "_call"

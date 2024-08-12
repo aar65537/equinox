@@ -18,6 +18,10 @@ Most users find that this is a simpler API when working with complicated PyTrees
 
 ::: equinox.filter_eval_shape
 
+---
+
+::: equinox.filter_shard
+
 ## Automatic differentiation
 
 ::: equinox.filter_grad
@@ -36,7 +40,15 @@ Most users find that this is a simpler API when working with complicated PyTrees
 
 ---
 
-::: equinox.filter_checkpoint
+::: equinox.filter_jacfwd
+
+---
+
+::: equinox.filter_jacrev
+
+---
+
+::: equinox.filter_hessian
 
 ---
 
@@ -45,6 +57,10 @@ Most users find that this is a simpler API when working with complicated PyTrees
 ---
 
 ::: equinox.filter_custom_vjp
+
+---
+
+::: equinox.filter_checkpoint
 
 ---
 

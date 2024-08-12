@@ -1,6 +1,7 @@
 """This module provides operations to assert that a particular value is always
 unbatched, or not differentiated, etc.
 """
+
 import functools as ft
 from typing import Optional
 
@@ -9,6 +10,7 @@ import jax.core
 import jax.interpreters.ad as ad
 import jax.interpreters.batching as batching
 import jax.interpreters.mlir as mlir
+import jax.numpy as jnp
 import jax.tree_util as jtu
 from jaxtyping import PyTree
 
@@ -92,12 +94,12 @@ _nondifferentiable_backward_impl = lambda x, *, msg, symbolic: x
 nondifferentiable_backward_p.def_impl(_nondifferentiable_backward_impl)
 nondifferentiable_backward_p.def_abstract_eval(_nondifferentiable_backward_impl)
 ad.primitive_jvps[nondifferentiable_backward_p] = _nondifferentiable_backward_jvp
-ad.primitive_transposes[
-    nondifferentiable_backward_p
-] = _nondifferentiable_backward_transpose
-batching.primitive_batchers[
-    nondifferentiable_backward_p
-] = _nondifferentiable_backward_batch
+ad.primitive_transposes[nondifferentiable_backward_p] = (
+    _nondifferentiable_backward_transpose
+)
+batching.primitive_batchers[nondifferentiable_backward_p] = (
+    _nondifferentiable_backward_batch
+)
 mlir.register_lowering(
     nondifferentiable_backward_p,
     mlir.lower_fun(_nondifferentiable_backward_impl, multiple_results=False),
@@ -122,26 +124,37 @@ def nondifferentiable_backward(
     return combine(jtu.tree_unflatten(treedef, flat), static)
 
 
-def _cannot_batch(x, b, *, msg):
+def _cannot_batch(x, b, *, msg, allow_constant_across_batch):
     (x,) = x
     (b,) = b
     if b is batching.not_mapped:
         return x, b
     else:
-        raise ValueError(msg)
+        if allow_constant_across_batch:
+            x = error_if(x, jnp.min(x, axis=b) != jnp.max(x, axis=b), msg)
+            return jnp.take(x, 0, axis=b), batching.not_mapped
+        else:
+            raise ValueError(msg)
 
 
 nonbatchable_p = jax.core.Primitive("nonbatchable")
-nonbatchable_p.def_impl(lambda x, *, msg: x)
-nonbatchable_p.def_abstract_eval(lambda x, *, msg: x)
+nonbatchable_p.def_impl(lambda x, *, msg, allow_constant_across_batch: x)
+nonbatchable_p.def_abstract_eval(lambda x, *, msg, allow_constant_across_batch: x)
 batching.primitive_batchers[nonbatchable_p] = _cannot_batch
 mlir.register_lowering(
-    nonbatchable_p, mlir.lower_fun(lambda x, *, msg: x, multiple_results=False)
+    nonbatchable_p,
+    mlir.lower_fun(
+        lambda x, *, msg, allow_constant_across_batch: x, multiple_results=False
+    ),
 )
 
 
 def nonbatchable(
-    x: PyTree, *, name: Optional[str] = None, msg: Optional[str] = None
+    x: PyTree,
+    *,
+    name: Optional[str] = None,
+    msg: Optional[str] = None,
+    allow_constant_across_batch: bool = False,
 ) -> PyTree:
     """Identity function. Raises a trace-time assert if it is batched."""
     dynamic, static = partition(x, is_array)
@@ -149,7 +162,21 @@ def nonbatchable(
     if msg is None:
         if name is None:
             name = "This operation"
-        msg = f"Unexpected batch tracer. {name} cannot be vmap'd."
-    bind = ft.partial(nonbatchable_p.bind, msg=msg)
+        if allow_constant_across_batch:
+            msg = (
+                f"Nonconstant batch. {name} has received a batch of values that were "
+                "expected to be constant. This is probably an internal error in the "
+                "library you are using."
+            )
+        else:
+            msg = (
+                f"Unexpected batch tracer. {name} cannot be vmap'd. This is probably "
+                "an internal error in the library you are using."
+            )
+    bind = ft.partial(
+        nonbatchable_p.bind,
+        msg=msg,
+        allow_constant_across_batch=allow_constant_across_batch,
+    )
     flat = map(bind, flat)
     return combine(jtu.tree_unflatten(treedef, flat), static)

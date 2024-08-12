@@ -184,7 +184,7 @@ def test_grad_jit_old():
 
 
 def test_filter_jvp():
-    _map_is_array_like = lambda pytree: jax.tree_map(
+    _map_is_array_like = lambda pytree: jtu.tree_map(
         lambda x: jnp.array(x) if eqx.is_array_like(x) else x, pytree
     )
 
@@ -461,6 +461,61 @@ def test_filter_custom_jvp_exact():
         return jax.lax.cond(x < y, f, lambda _x, _y: _y, x, y)
 
     jax.grad(g)(1.0, 1)
+
+
+def test_filter_hessian_and_jacfwd_and_jacrev():
+    # filter_hessian is implemented in terms of the other 2, so this tests all 3.
+
+    def f(x, y):
+        return jnp.sin(x) * y
+
+    def f_fwd(x, y):
+        return f(x, y), (jnp.cos(x), jnp.sin(x), y)
+
+    def f_bwd(res, g):
+        cos_x, sin_x, y = res
+        return (cos_x * g * y, sin_x * g)
+
+    f_custom = jax.custom_vjp(f)
+    f_custom.defvjp(f_fwd, f_bwd)
+    jax_hess = jax.hessian(f)(1.0, 2.0)
+    eqx_hess = eqx.filter_hessian(f)(jnp.array(1.0), jnp.array(2.0))
+    assert tree_allclose(jax_hess, eqx_hess)
+
+
+def test_pytree_jacfwd():
+    class NeuralNetwork(eqx.Module):
+        layers: list
+        extra_bias: jax.Array
+
+        def __init__(self, key):
+            key1, key2, key3 = jax.random.split(key, 3)
+            self.layers = [
+                eqx.nn.Linear(2, 8, key=key1),
+                eqx.nn.Linear(8, 8, key=key2),
+                eqx.nn.Linear(8, 2, key=key3),
+            ]
+            self.extra_bias = jax.numpy.ones(2)
+
+        def __call__(self, x):
+            for layer in self.layers[:-1]:
+                x = jax.nn.relu(layer(x))
+            return self.layers[-1](x) + self.extra_bias
+
+    def loss(model, x, y):
+        pred_y = jax.vmap(model)(x)
+        return jax.numpy.mean((y - pred_y) ** 2)
+
+    x_key, y_key, model_key = jax.random.split(jax.random.PRNGKey(0), 3)
+    x = jax.random.normal(x_key, (3, 2))
+    y = jax.random.normal(y_key, (3, 2))
+    model = NeuralNetwork(model_key)
+    assert tree_allclose(
+        eqx.filter_grad(loss)(model, x, y), eqx.filter_jacfwd(loss)(model, x, y)
+    )
+    assert tree_allclose(
+        eqx.filter_grad(loss)(model, x, y), eqx.filter_jacrev(loss)(model, x, y)
+    )
 
 
 def test_filter_custom_jvp_symbolic_zero():
