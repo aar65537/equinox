@@ -160,8 +160,7 @@ def _resolve_dims_spec(dims_spec_: DimsSpec, pytree: PyTree[Any]) -> PyTree[Dims
 
 
 def _resolve_dims(dims_spec_: PyTree[DimsSpec], pytree: PyTree[Any]) -> PyTree[Dims]:
-    resolved_dims = _tree_map(_resolve_dims_spec, dims_spec_, pytree)
-    return _tree_restructure(resolved_dims, pytree)
+    return _tree_map(_resolve_dims_spec, dims_spec_, pytree)
 
 
 def _gufunc_dims(dims: Dims) -> str:
@@ -191,9 +190,12 @@ class _VectorizeWrapper(Module):
         # Combine args and kwargs into a single PyTree
         args, kwargs = _bind(self._signature, args, kwargs)
         in_ = _combine_input(args, kwargs)
+        in_flat, in_treedef = _tree_flatten(in_)
         # Determine core dimensions of inputs
         in_dims = _resolve_dims(self._in_dims, in_)
-        vectorize_filter = _tree_map(_is_vectorized, in_, in_dims)
+        in_dims_flat, _ = _tree_flatten(in_dims)
+        vectorize_filter_flat = _tree_map(_is_vectorized, in_flat, in_dims_flat)
+        vectorize_filter = jtu.tree_unflatten(in_treedef, vectorize_filter_flat)
         # Split input into list of Arrays to be vectorized and excluded PyTree
         vectorize_in, exclude_in = _partition(in_, vectorize_filter)
         vectorize_in_leaves, in_treedef = _tree_flatten(vectorize_in)
@@ -214,13 +216,17 @@ class _VectorizeWrapper(Module):
             _out_dims_spec = jtu.tree_unflatten(_out_treedef, self._out_dims)
             _out_dims = _resolve_dims(_out_dims_spec, _out)
             # Split output into list of Arrays to be vectorized and excluded PyTree
-            _vectorize_filter = _tree_map(_is_vectorized, _out, _out_dims)
+            _out_flat, _out_treedef = _tree_flatten(_out)
+            _out_dims_flat, _ = _tree_flatten(_out_dims)
+            _vectorize_filter_flat = _tree_map(
+                _is_vectorized, _out_flat, _out_dims_flat
+            )
+            _vectorize_filter = jtu.tree_unflatten(_out_treedef, _vectorize_filter_flat)
             _vectorize_out, _exclude_out = _partition(_out, _vectorize_filter)
             return *_vectorize_out, Static(_exclude_out)
 
         # Construct gufunc signature
-        vectoirze_in_dims = _filter(in_dims, vectorize_filter)
-        in_dims_leaves, _ = _tree_flatten(vectoirze_in_dims)
+        in_dims_leaves = _filter(in_dims_flat, vectorize_filter_flat)
         out_dims_leaves = self._out_dims + (None,)
         gufunc_signature = _gufunc_signature(in_dims_leaves, out_dims_leaves)
         # Call wrapped function
