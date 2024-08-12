@@ -20,7 +20,8 @@ def _test_ensemble(make_model, in_shape, out_dims, out_shape, getkey):
         apply = vectorize(type(ensemble).__call__)
         for batch_shape in shapes:
             data = jnp.ones((*batch_shape, *in_shape))
-            out = apply(ensemble, data, key=getkey())
+            with jax.numpy_rank_promotion("allow"):
+                out = apply(ensemble, data, key=getkey())
             assert out.shape == out_shape(ensemble_shape, batch_shape)
 
 
