@@ -12,7 +12,7 @@ import pytest
 def _test_ensemble(make_model, in_shape, out_dims, out_shape, getkey):
     make_ensemble = eqx.filter_vectorize(make_model, in_dims="2")
     in_dims = ("", " ".join(str(dim) for dim in in_shape), "2")
-    shapes = [(), (10,), (20, 10), (30, 20, 10)]
+    shapes = [(), (2,), (3, 2), (5, 3, 2)]
     vectorize = eqx.filter_vectorize(in_dims=in_dims, out_dims=out_dims)
     for ensemble_shape in shapes:
         keys = jrandom.split(getkey(), ensemble_shape)
@@ -356,6 +356,30 @@ def test_conv1d(getkey):
     ).reshape(3, 6)
     assert jnp.allclose(conv(data), answer)
 
+    _test_ensemble(
+        make_model=eqx.Partial(eqx.nn.Conv1d, 1, 3, 3),
+        in_shape=(1, 32),
+        out_dims="out_channels out_1",
+        out_shape=lambda ensemble, batch: (*max(ensemble, batch, key=len), 3, 30),
+        getkey=getkey,
+    )
+
+    _test_ensemble(
+        make_model=eqx.Partial(
+            eqx.nn.Conv1d,
+            in_channels=3,
+            out_channels=1,
+            kernel_size=(3,),
+            stride=2,
+            padding=1,
+            use_bias=True,
+        ),
+        in_shape=(3, 32),
+        out_dims="out_channels out_1",
+        out_shape=lambda ensemble, batch: (*max(ensemble, batch, key=len), 1, 16),
+        getkey=getkey,
+    )
+
 
 def test_conv2d(getkey):
     # Positional arguments
@@ -450,6 +474,30 @@ def test_conv2d(getkey):
     )
     assert jnp.allclose(conv(data), answer)
 
+    _test_ensemble(
+        make_model=eqx.Partial(eqx.nn.Conv2d, 1, 3, 3),
+        in_shape=(1, 32, 32),
+        out_dims="out_channels out_1 out_2",
+        out_shape=lambda ensemble, batch: (*max(ensemble, batch, key=len), 3, 30, 30),
+        getkey=getkey,
+    )
+
+    _test_ensemble(
+        make_model=eqx.Partial(
+            eqx.nn.Conv2d,
+            in_channels=3,
+            out_channels=1,
+            kernel_size=(3, 3),
+            stride=2,
+            padding=1,
+            use_bias=True,
+        ),
+        in_shape=(3, 32, 32),
+        out_dims="out_channels out_1 out_2",
+        out_shape=lambda ensemble, batch: (*max(ensemble, batch, key=len), 1, 16, 16),
+        getkey=getkey,
+    )
+
 
 def test_conv3d(getkey):
     # Positional arguments
@@ -497,6 +545,30 @@ def test_conv3d(getkey):
     conv = eqx.tree_at(lambda x: (x.weight, x.bias), conv, (new_weight, new_bias))
     answer = jnp.array([-3, -2, -1, 0, 1, 2, 3, 4, 1, 1, 1, 1]).reshape(1, 3, 2, 2)
     assert jnp.allclose(conv(data), answer)
+
+    _test_ensemble(
+        make_model=eqx.Partial(eqx.nn.Conv3d, 1, 3, 3),
+        in_shape=(1, 3, 32, 32),
+        out_dims="out_channels out_1 out_2 out_3",
+        out_shape=lambda e, b: (*max(e, b, key=len), 3, 1, 30, 30),
+        getkey=getkey,
+    )
+
+    _test_ensemble(
+        make_model=eqx.Partial(
+            eqx.nn.Conv3d,
+            in_channels=3,
+            out_channels=1,
+            kernel_size=(3, 3, 3),
+            stride=2,
+            padding=1,
+            use_bias=True,
+        ),
+        in_shape=(3, 3, 32, 32),
+        out_dims="out_channels out_1 out_2 out_3",
+        out_shape=lambda e, b: (*max(e, b, key=len), 1, 2, 16, 16),
+        getkey=getkey,
+    )
 
 
 def test_conv_padding(getkey):
@@ -582,6 +654,32 @@ def test_convtranspose1d(getkey):
     ).reshape(3, 8)
     assert jnp.all(conv(data) == answer)
 
+    _test_ensemble(
+        make_model=eqx.Partial(eqx.nn.ConvTranspose1d, 1, 3, 3),
+        in_shape=(1, 32),
+        out_dims="out_channels out_1",
+        out_shape=lambda ensemble, batch: (*max(ensemble, batch, key=len), 3, 34),
+        getkey=getkey,
+    )
+
+    _test_ensemble(
+        make_model=eqx.Partial(
+            eqx.nn.ConvTranspose1d,
+            in_channels=3,
+            out_channels=1,
+            kernel_size=(3,),
+            stride=2,
+            padding=1,
+            output_padding=1,
+            dilation=2,
+            use_bias=False,
+        ),
+        in_shape=(3, 31),
+        out_dims="out_channels out_1",
+        out_shape=lambda ensemble, batch: (*max(ensemble, batch, key=len), 1, 64),
+        getkey=getkey,
+    )
+
 
 def test_convtranspose2d(getkey):
     # Positional arguments
@@ -651,6 +749,32 @@ def test_convtranspose2d(getkey):
     )
     assert jnp.allclose(conv(data), answer)
 
+    _test_ensemble(
+        make_model=eqx.Partial(eqx.nn.ConvTranspose2d, 1, 3, 3),
+        in_shape=(1, 32, 32),
+        out_dims="out_channels out_1 out_2",
+        out_shape=lambda ensemble, batch: (*max(ensemble, batch, key=len), 3, 34, 34),
+        getkey=getkey,
+    )
+
+    _test_ensemble(
+        make_model=eqx.Partial(
+            eqx.nn.ConvTranspose2d,
+            in_channels=3,
+            out_channels=1,
+            kernel_size=(3, 3),
+            stride=2,
+            padding=1,
+            output_padding=1,
+            dilation=2,
+            use_bias=False,
+        ),
+        in_shape=(3, 31, 31),
+        out_dims="out_channels out_1 out_2",
+        out_shape=lambda ensemble, batch: (*max(ensemble, batch, key=len), 1, 64, 64),
+        getkey=getkey,
+    )
+
 
 def test_convtranspose3d(getkey):
     # Positional arguments
@@ -715,6 +839,32 @@ def test_convtranspose3d(getkey):
         ]
     ).reshape(1, 3, 3, 3)
     assert jnp.all(conv(data) == answer)
+
+    _test_ensemble(
+        make_model=eqx.Partial(eqx.nn.ConvTranspose3d, 1, 3, 3),
+        in_shape=(1, 3, 32, 32),
+        out_dims="out_channels out_1 out_2 out_3",
+        out_shape=lambda e, b: (*max(e, b, key=len), 3, 5, 34, 34),
+        getkey=getkey,
+    )
+
+    _test_ensemble(
+        make_model=eqx.Partial(
+            eqx.nn.ConvTranspose3d,
+            in_channels=3,
+            out_channels=1,
+            kernel_size=(3, 3, 3),
+            stride=2,
+            padding=1,
+            output_padding=1,
+            dilation=2,
+            use_bias=False,
+        ),
+        in_shape=(3, 2, 31, 31),
+        out_dims="out_channels out_1 out_2 out_3",
+        out_shape=lambda e, b: (*max(e, b, key=len), 1, 6, 64, 64),
+        getkey=getkey,
+    )
 
 
 def test_convtranspose_padding(getkey):
